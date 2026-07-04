@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    # Fetches and compiles malachite-cpp's Rust staticlib from scratch, then the
+    # debug C++ build and the suite (including the N=200 adversarial sim).
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Boost 1.83 ships on ubuntu-latest; the build needs system, log, log_setup
+      # (static) plus the header-only test framework.
+      - name: Install Boost
+        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev
+
+      # cmake and a Rust toolchain (for malachite-cpp) are preinstalled.
+      - name: Toolchain versions
+        run: cargo --version && rustc --version && cmake --version
+
+      - name: Build and test
+        run: ./build.sh debug --test

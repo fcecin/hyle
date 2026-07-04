@@ -1,0 +1,13 @@
+# build output
+build/
+
+# gitignored notes + spec writing dir
+local/
+
+# editor / OS
+*.swp
+*~
+.DS_Store
+compile_commands.json
+.cache/
+morphe-*.tar.gz
