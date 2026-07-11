@@ -9,10 +9,8 @@ add_executable(hyletests
   test_governance.cpp
   test_snapshot.cpp
   test_base.cpp
-  test_ledger.cpp
-  test_registry.cpp
   test_sync.cpp
-  test_mint.cpp
+  test_sudo.cpp
   test_stress.cpp
   test_sim.cpp
   test_votewal.cpp

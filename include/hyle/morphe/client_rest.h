@@ -12,6 +12,7 @@
 #include <string>
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 class ClientRestServer {
 public:

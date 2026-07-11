@@ -7,7 +7,7 @@
 
 namespace fs = std::filesystem;
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 namespace {
 std::string g_override;
@@ -57,4 +57,4 @@ std::vector<std::string> list_key_names() {
   return out;
 }
 
-} // namespace hyle::morphe
+} // namespace hyle::services

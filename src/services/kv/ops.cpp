@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace hyle {
+namespace hyle::services::kv {
 
 wire::Bytes encode_ops(const std::vector<Op>& ops) {
   wire::Bytes out;
@@ -44,4 +44,4 @@ std::vector<Op> decode_ops(wire::View in) {
   return ops;
 }
 
-} // namespace hyle
+} // namespace hyle::services::kv

@@ -11,6 +11,7 @@
 #include <chrono>
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 namespace asio = boost::asio;
 using tcp = boost::asio::ip::tcp;

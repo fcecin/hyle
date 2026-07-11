@@ -33,8 +33,8 @@ using tcp = boost::asio::ip::tcp;
 
 bool g_raw = false;
 
-std::string to_hex_str(const uint8_t* p, size_t n) { return morphe::hex_encode(p, n); }
-wire::Bytes unhex(const std::string& s) { return morphe::hex_decode(s); }
+std::string to_hex_str(const uint8_t* p, size_t n) { return services::hex_encode(p, n); }
+wire::Bytes unhex(const std::string& s) { return services::hex_decode(s); }
 
 struct Endpoint { std::string host; uint16_t port; };
 
@@ -87,7 +87,7 @@ KeyPair load_signer(const std::string& key) {
   if (key.empty()) throw std::runtime_error("no signer (pass --key <name|file>)");
   const bool looks_path = key.find('/') != std::string::npos ||
                           (key.size() > 4 && key.substr(key.size() - 4) == ".key");
-  return morphe::load_key(looks_path ? key : morphe::key_path(key));
+  return services::load_key(looks_path ? key : services::key_path(key));
 }
 
 std::string resolve_pubkey(const std::string& s) {
@@ -97,8 +97,8 @@ std::string resolve_pubkey(const std::string& s) {
   if (rest.find('/') != std::string::npos)
     path = fs::is_directory(rest) ? rest + "/node.key" : rest;
   else
-    path = morphe::key_path(rest);
-  return morphe::pubkey_hex(morphe::load_key(path).pub);
+    path = services::key_path(rest);
+  return services::pubkey_hex(services::load_key(path).pub);
 }
 
 int rest_get(const Endpoint& ep, const std::string& route) {
@@ -129,19 +129,19 @@ uint64_t fetch_sequence(const Endpoint& ep, const std::string& pubkey_hex) {
 int do_tx_transfer(const Endpoint& ep, const std::string& key, const std::string& to, uint64_t amount,
                    std::optional<uint64_t> seq_opt) {
   const KeyPair signer = load_signer(key);
-  const std::string mypk = morphe::pubkey_hex(signer.pub);
+  const std::string mypk = services::pubkey_hex(signer.pub);
   const uint64_t seq = seq_opt ? *seq_opt : fetch_sequence(ep, mypk);
   const std::string chain = fetch_chain_id(ep);
-  const PubKey topk = morphe::pubkey_from_hex(resolve_pubkey(to));
+  const PubKey topk = services::pubkey_from_hex(resolve_pubkey(to));
   wire::Bytes dst;
-  dst.push_back(morphe::ACCOUNT_PREFIX);
+  dst.push_back(services::ACCOUNT_PREFIX);
   dst.insert(dst.end(), topk.begin(), topk.end());
-  const morphe::TransferOp op =
-      morphe::make_transfer(signer, wire::View(dst.data(), dst.size()), amount, seq,
+  const services::TransferOp op =
+      services::make_transfer(signer, wire::View(dst.data(), dst.size()), amount, seq,
                             wire::View(reinterpret_cast<const uint8_t*>(chain.data()), chain.size()));
-  morphe::Decoded d;
+  services::Decoded d;
   d.transfers.push_back(op);
-  const wire::Bytes b = morphe::encode_ops(d);
+  const wire::Bytes b = services::encode_ops(d);
   std::printf("%s\n", http_req(ep, http::verb::post, "/tx", to_hex_str(b.data(), b.size())).c_str());
   return 0;
 }
@@ -149,17 +149,17 @@ int do_tx_transfer(const Endpoint& ep, const std::string& key, const std::string
 int do_tx_entry_put(const Endpoint& ep, const std::string& key, const std::string& name_hex,
                     uint64_t fund, std::optional<uint64_t> seq_opt, const std::string& payload_hex) {
   const KeyPair signer = load_signer(key);
-  const uint64_t seq = seq_opt ? *seq_opt : fetch_sequence(ep, morphe::pubkey_hex(signer.pub));
+  const uint64_t seq = seq_opt ? *seq_opt : fetch_sequence(ep, services::pubkey_hex(signer.pub));
   const std::string chain = fetch_chain_id(ep);
   const wire::Bytes name = unhex(name_hex);
   const wire::Bytes payload = unhex(payload_hex);
-  const morphe::EntryOp op = morphe::make_entry_put(
+  const services::EntryOp op = services::make_entry_put(
       signer, wire::View(name.data(), name.size()), seq, fund,
       wire::View(payload.data(), payload.size()),
       wire::View(reinterpret_cast<const uint8_t*>(chain.data()), chain.size()));
-  morphe::Decoded d;
+  services::Decoded d;
   d.entries.push_back(op);
-  const wire::Bytes b = morphe::encode_ops(d);
+  const wire::Bytes b = services::encode_ops(d);
   std::printf("%s\n", http_req(ep, http::verb::post, "/tx", to_hex_str(b.data(), b.size())).c_str());
   return 0;
 }
@@ -173,29 +173,29 @@ int control_rpc(const Endpoint& ep, const std::string& method, const std::string
 }
 
 int key_gen(const std::string& name, bool force) {
-  const std::string path = morphe::key_path(name);
+  const std::string path = services::key_path(name);
   if (fs::exists(path) && !force)
     throw std::runtime_error("key '" + name + "' exists (use --force to overwrite): " + path);
   fs::create_directories(fs::path(path).parent_path());
   const KeyPair kp = KeyPair::generate();
-  morphe::save_key(path, kp);
-  std::printf("%s  %s\n", name.c_str(), morphe::pubkey_hex(kp.pub).c_str());
+  services::save_key(path, kp);
+  std::printf("%s  %s\n", name.c_str(), services::pubkey_hex(kp.pub).c_str());
   return 0;
 }
 int key_ls() {
-  for (const std::string& n : morphe::list_key_names()) {
-    try { std::printf("%-16s %s\n", n.c_str(), morphe::pubkey_hex(morphe::load_key(morphe::key_path(n)).pub).c_str()); }
+  for (const std::string& n : services::list_key_names()) {
+    try { std::printf("%-16s %s\n", n.c_str(), services::pubkey_hex(services::load_key(services::key_path(n)).pub).c_str()); }
     catch (...) { std::printf("%-16s (unreadable)\n", n.c_str()); }
   }
   return 0;
 }
 int key_show(const std::string& name) {
-  std::printf("%s\n", morphe::pubkey_hex(morphe::load_key(morphe::key_path(name)).pub).c_str());
+  std::printf("%s\n", services::pubkey_hex(services::load_key(services::key_path(name)).pub).c_str());
   return 0;
 }
-int key_path_cmd(const std::string& name) { std::printf("%s\n", morphe::key_path(name).c_str()); return 0; }
+int key_path_cmd(const std::string& name) { std::printf("%s\n", services::key_path(name).c_str()); return 0; }
 int key_import(const std::string& name, const std::string& hex, bool force) {
-  const std::string path = morphe::key_path(name);
+  const std::string path = services::key_path(name);
   if (fs::exists(path) && !force) throw std::runtime_error("key '" + name + "' exists (use --force)");
   const wire::Bytes b = unhex(hex);
   if (b.size() != 32) throw std::runtime_error("private key must be 64 hex chars (32 bytes)");
@@ -203,18 +203,18 @@ int key_import(const std::string& name, const std::string& hex, bool force) {
   std::copy(b.begin(), b.end(), pk.begin());
   fs::create_directories(fs::path(path).parent_path());
   const KeyPair kp = KeyPair::from_secret(pk);
-  morphe::save_key(path, kp);
-  std::printf("%s  %s\n", name.c_str(), morphe::pubkey_hex(kp.pub).c_str());
+  services::save_key(path, kp);
+  std::printf("%s  %s\n", name.c_str(), services::pubkey_hex(kp.pub).c_str());
   return 0;
 }
 int key_export(const std::string& name) {
-  const std::string path = morphe::key_path(name);
-  const KeyPair kp = morphe::load_key(path);
+  const std::string path = services::key_path(name);
+  const KeyPair kp = services::load_key(path);
   std::printf("%s\n", to_hex_str(kp.priv.data(), 32).c_str());
   return 0;
 }
 int key_rm(const std::string& name) {
-  const std::string path = morphe::key_path(name);
+  const std::string path = services::key_path(name);
   if (!fs::remove(path)) throw std::runtime_error("no such key: " + name);
   std::printf("removed %s\n", name.c_str());
   return 0;
@@ -263,7 +263,7 @@ int main(int argc, char** argv) {
   app.add_flag("--raw", g_raw, "Print the full JSON-RPC envelope for control ops (place before the subcommand)");
   { static std::string keys_dir;
     app.add_option("--keys", keys_dir, "Keyring directory (overrides TECHNE_KEYS; place before the subcommand)")
-        ->each([](const std::string& d) { morphe::set_keyring_dir(d); }); }
+        ->each([](const std::string& d) { services::set_keyring_dir(d); }); }
   app.footer(
       "Every command talks to a running node over one of its two ports. `tx` and `query` use the CLIENT "
       "port (pass `--morphe-node host:port`, or set TECHNE_MORPHE_NODE); `gov` and `snapshot` use the CONTROL port "

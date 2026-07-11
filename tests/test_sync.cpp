@@ -5,13 +5,15 @@
 
 #include <hyle/core/consensus.h>
 #include <hyle/core/crypto.h>
-#include <hyle/services/kv/ledger.h>
+#include <hyle/services/app.h>
+#include <hyle/services/kv/pow.h>
 
 #include <algorithm>
 #include <array>
 #include <vector>
 
 using namespace hyle;
+using namespace hyle::services;
 
 BOOST_AUTO_TEST_SUITE(SyncTests)
 
@@ -123,23 +125,6 @@ BOOST_AUTO_TEST_CASE(DecideMissBecomesZombieThenBlockSyncHeals) {
 
   c.catch_up(3, 0);
   BOOST_TEST(c.nodes[3]->applied_height() == 4u);
-  BOOST_TEST((c.nodes[3]->composite_hash() == c.nodes[0]->composite_hash()));
-}
-
-BOOST_AUTO_TEST_CASE(LedgerConvergesThroughBlockSync) {
-  std::vector<Ledger> led(4);
-  std::vector<StateMachine*> sms;
-  for (auto& x : led) sms.push_back(&x);
-  LocalCluster c(sms);
-  c.run_to(3, 4);
-  c.deactivate(3);
-  c.run_to(9, 3);
-  BOOST_TEST(c.nodes[3]->last_decided() == 3u);
-
-  c.catch_up(3, 0);
-  BOOST_TEST(c.nodes[3]->last_decided() == 9u);
-  BOOST_TEST(led[3].total() == led[0].total());
-  BOOST_TEST(led[3].total() == 9u * Ledger::REWARD);
   BOOST_TEST((c.nodes[3]->composite_hash() == c.nodes[0]->composite_hash()));
 }
 

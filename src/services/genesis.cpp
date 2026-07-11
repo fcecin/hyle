@@ -8,7 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 namespace {
 
@@ -28,7 +28,7 @@ uint64_t parse_u64(const std::string& s) {
 } // namespace
 
 // A Config field left out of canonical() drops it from the genesis hash and can cause a fork.
-static_assert(sizeof(Config) == 104,
+static_assert(sizeof(Config) == 120,
               "Config changed: update genesis canonical()/parse()/to_text() and this size");
 
 wire::Bytes Genesis::canonical() const {
@@ -44,12 +44,14 @@ wire::Bytes Genesis::canonical() const {
   w.u64(config.fee_mint);
   w.u64(config.fee_transfer);
   w.u64(config.fee_entry);
+  w.u64(config.fee_sudo);
   w.u64(config.reward_base);
   w.u64(config.reward_max_diff);
   w.u64(config.mint_capacity);
   put_hash(w, config.mint_genesis_key);
   w.u64(config.rent_rate);
   w.u64(config.rip_bounty);
+  w.u64(config.sudo_ttl_secs);
   w.u64(config.pbts_window_secs);
   w.count(vs.size());
   for (const auto& v : vs) put_key(w, v);
@@ -98,6 +100,11 @@ bool Genesis::validate(std::string& err) const {
     err = "with rent_rate>0, rip_bounty must not exceed min(fee_transfer,fee_entry) (inflation pump)";
     return false;
   }
+  if (config.pbts_window_secs == 0) {
+    err = "pbts_window_secs must be > 0 (a 0 window rejects every block whose timestamp differs "
+          "from local time, so the chain cannot produce)";
+    return false;
+  }
   return true;
 }
 
@@ -123,12 +130,14 @@ Genesis Genesis::parse(const std::string& text) {
     else if (key == "fee_mint") { need(a); g.config.fee_mint = parse_u64(a); }
     else if (key == "fee_transfer") { need(a); g.config.fee_transfer = parse_u64(a); }
     else if (key == "fee_entry") { need(a); g.config.fee_entry = parse_u64(a); }
+    else if (key == "fee_sudo") { need(a); g.config.fee_sudo = parse_u64(a); }
     else if (key == "reward_base") { need(a); g.config.reward_base = parse_u64(a); }
     else if (key == "reward_max_diff") { need(a); g.config.reward_max_diff = static_cast<unsigned>(parse_u64(a)); }
     else if (key == "mint_capacity") { need(a); g.config.mint_capacity = parse_u64(a); }
     else if (key == "mint_key") { need(a); g.config.mint_genesis_key = hex_decode_fixed<32>(a); }
     else if (key == "rent_rate") { need(a); g.config.rent_rate = parse_u64(a); }
     else if (key == "rip_bounty") { need(a); g.config.rip_bounty = parse_u64(a); }
+    else if (key == "sudo_ttl_secs") { need(a); g.config.sudo_ttl_secs = parse_u64(a); }
     else if (key == "pbts_window_secs") { need(a); g.config.pbts_window_secs = parse_u64(a); }
     else throw std::runtime_error("genesis: line " + std::to_string(lineno) + ": unknown key '" + key + "'");
   }
@@ -148,16 +157,18 @@ std::string Genesis::to_text() const {
   o << "fee_mint " << config.fee_mint << "\n";
   o << "fee_transfer " << config.fee_transfer << "\n";
   o << "fee_entry " << config.fee_entry << "\n";
+  o << "fee_sudo " << config.fee_sudo << "\n";
   o << "reward_base " << config.reward_base << "\n";
   o << "reward_max_diff " << config.reward_max_diff << "\n";
   o << "mint_capacity " << config.mint_capacity << "\n";
   o << "mint_key " << hex_encode(config.mint_genesis_key.data(), 32) << "\n";
   o << "rent_rate " << config.rent_rate << "\n";
   o << "rip_bounty " << config.rip_bounty << "\n";
+  o << "sudo_ttl_secs " << config.sudo_ttl_secs << "\n";
   o << "pbts_window_secs " << config.pbts_window_secs << "\n";
   for (const auto& v : vs) o << "validator " << hex_encode(v.data(), 32) << "\n";
   for (const auto& a : al) o << "alloc " << hex_encode(a.first.data(), 32) << " " << a.second << "\n";
   return o.str();
 }
 
-} // namespace hyle::morphe
+} // namespace hyle::services

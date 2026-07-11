@@ -20,6 +20,7 @@ namespace json = boost::json;
 using tcp = net::ip::tcp;
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 namespace {
 

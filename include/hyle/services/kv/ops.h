@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace hyle {
+namespace hyle::services::kv {
 
 enum class OpKind : uint8_t {
   Put = 1,
@@ -32,6 +32,6 @@ struct Op {
 wire::Bytes encode_ops(const std::vector<Op>& ops);
 std::vector<Op> decode_ops(wire::View in);
 
-} // namespace hyle
+} // namespace hyle::services::kv
 
 #endif

@@ -1,8 +1,12 @@
 #include <hyle/services/ops.h>
 
+#include <hyle/services/schema.h>
+
 #include <cstring>
 
-namespace hyle::morphe {
+namespace hyle::services {
+
+using kv::pow_difficulty;
 
 namespace {
 void put_key(wire::Writer& w, const PubKey& k) { w.raw(wire::View(k.data(), k.size())); }
@@ -49,6 +53,16 @@ wire::Bytes encode_ops(const Decoded& d) {
     w.bytes(wire::View(o.payload.data(), o.payload.size()));
     w.raw(wire::View(o.sig.data(), o.sig.size()));
   }
+  w.count(d.sudos.size());
+  for (const auto& o : d.sudos) {
+    w.u8(static_cast<uint8_t>(o.kind));
+    put_key(w, o.signer);
+    w.u64(o.seq);
+    put_key(w, o.proposer);
+    put_hash(w, o.inner_hash);
+    w.bytes(wire::View(o.inner.data(), o.inner.size()));
+    w.raw(wire::View(o.sig.data(), o.sig.size()));
+  }
   return out;
 }
 
@@ -80,7 +94,7 @@ Decoded decode_ops(wire::View in) {
   for (size_t i = 0; i < ne; ++i) {
     EntryOp o;
     const uint8_t k = r.u8();
-    if (k > static_cast<uint8_t>(EntryKind::Rip)) throw wire::Error("morphe: entry kind out of range");
+    if (k > static_cast<uint8_t>(EntryKind::Rip)) throw wire::Error("services: entry kind out of range");
     o.kind = static_cast<EntryKind>(k);
     o.signer = get_key(r);
     wire::View namev = r.bytes();
@@ -93,7 +107,22 @@ Decoded decode_ops(wire::View in) {
     std::memcpy(o.sig.data(), r.raw(64).data(), 64);
     d.entries.push_back(std::move(o));
   }
-  if (!r.empty()) throw wire::Error("morphe: ops batch has trailing bytes");
+  size_t ns = r.count();
+  for (size_t i = 0; i < ns; ++i) {
+    SudoOp o;
+    const uint8_t k = r.u8();
+    if (k > static_cast<uint8_t>(SudoKind::Approve)) throw wire::Error("services: sudo kind out of range");
+    o.kind = static_cast<SudoKind>(k);
+    o.signer = get_key(r);
+    o.seq = r.u64();
+    o.proposer = get_key(r);
+    o.inner_hash = get_hash(r);
+    wire::View innerv = r.bytes();
+    o.inner.assign(innerv.begin(), innerv.end());
+    std::memcpy(o.sig.data(), r.raw(64).data(), 64);
+    d.sudos.push_back(std::move(o));
+  }
+  if (!r.empty()) throw wire::Error("services: ops batch has trailing bytes");
   return d;
 }
 
@@ -227,4 +256,80 @@ EntryOp make_entry_rip(wire::View name, const PubKey& culler) {
   return o;
 }
 
-} // namespace hyle::morphe
+// inner_hash is in the signed bytes, so a vote authorizes exactly the proposed act.
+wire::Bytes sudo_sign_bytes(wire::View chain_id, SudoKind kind, const PubKey& signer, uint64_t seq,
+                            const PubKey& proposer, const Hash& inner_hash) {
+  wire::Bytes out;
+  wire::Writer w(out);
+  w.str("MORPHE_SUDO_V1");
+  w.bytes(chain_id);
+  w.u8(static_cast<uint8_t>(kind));
+  w.raw(wire::View(signer.data(), signer.size()));
+  w.u64(seq);
+  w.raw(wire::View(proposer.data(), proposer.size()));
+  w.raw(wire::View(inner_hash.data(), inner_hash.size()));
+  return out;
+}
+
+Hash tx_id(wire::View chain_id, const SudoOp& o) {
+  const wire::Bytes sb =
+      sudo_sign_bytes(chain_id, o.kind, o.signer, o.seq, o.proposer, o.inner_hash);
+  return id_from(wire::View(sb.data(), sb.size()), o.sig);
+}
+
+SudoOp make_sudo_propose(const KeyPair& proposer, uint64_t seq, wire::View inner,
+                         wire::View chain_id) {
+  SudoOp o;
+  o.kind = SudoKind::Propose;
+  o.signer = proposer.pub;
+  o.seq = seq;
+  o.proposer = proposer.pub;
+  o.inner_hash = sha256(inner);
+  o.inner.assign(inner.begin(), inner.end());
+  const wire::Bytes sb =
+      sudo_sign_bytes(chain_id, o.kind, o.signer, o.seq, o.proposer, o.inner_hash);
+  o.sig = proposer.sign(wire::View(sb.data(), sb.size()));
+  return o;
+}
+
+SudoOp make_sudo_approve(const KeyPair& voter, uint64_t seq, const PubKey& proposer,
+                         const Hash& inner_hash, wire::View chain_id) {
+  SudoOp o;
+  o.kind = SudoKind::Approve;
+  o.signer = voter.pub;
+  o.seq = seq;
+  o.proposer = proposer;
+  o.inner_hash = inner_hash;
+  const wire::Bytes sb =
+      sudo_sign_bytes(chain_id, o.kind, o.signer, o.seq, o.proposer, o.inner_hash);
+  o.sig = voter.sign(wire::View(sb.data(), sb.size()));
+  return o;
+}
+
+bool valid_transfer_dest(wire::View to) {
+  if (to.empty()) return false;
+  if (to[0] == ACCOUNT_PREFIX) return to.size() == 33;
+  if (to[0] == ENTRY_PREFIX) return to.size() >= 2;
+  return false;
+}
+
+bool valid_sudo_inner(wire::View inner) {
+  try {
+    Decoded d = decode_ops(inner);
+    if (!d.mints.empty()) return false;   // mint is proof-of-work, not governance
+    if (!d.sudos.empty()) return false;   // no nested sudo
+    if (d.transfers.empty() && d.entries.empty()) return false;
+    for (const auto& o : d.transfers)
+      if (!valid_transfer_dest(wire::View(o.to.data(), o.to.size()))) return false;
+    for (const auto& o : d.entries) {
+      if (o.name.empty()) return false;
+      if (o.kind == EntryKind::Put && is_mint_sentinel(o.signer)) return false;
+      if (o.kind == EntryKind::Give && is_mint_sentinel(o.aux)) return false;
+    }
+    return true;
+  } catch (const wire::Error&) {
+    return false;
+  }
+}
+
+} // namespace hyle::services

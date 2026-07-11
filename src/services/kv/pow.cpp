@@ -4,7 +4,7 @@
 
 #include <cstring>
 
-namespace hyle {
+namespace hyle::services::kv {
 
 Hash Sha256PowVerifier::hash(const Hash& epoch_key, const PubKey& beneficiary,
                              uint64_t nonce) const {
@@ -33,4 +33,4 @@ unsigned pow_difficulty(const Hash& h) {
   return bits;
 }
 
-} // namespace hyle
+} // namespace hyle::services::kv

@@ -5,7 +5,7 @@
 
 #include <cstdint>
 
-namespace hyle {
+namespace hyle::services::kv {
 
 struct PowVerifier {
   virtual ~PowVerifier() = default;
@@ -19,6 +19,6 @@ struct Sha256PowVerifier : PowVerifier {
 
 unsigned pow_difficulty(const Hash& h);
 
-} // namespace hyle
+} // namespace hyle::services::kv
 
 #endif

@@ -19,6 +19,7 @@
 #include <string>
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 class AsioMesh : public Transport {
 public:

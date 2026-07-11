@@ -1,6 +1,6 @@
 #include <hyle/services/kv/kv_state_machine.h>
 
-namespace hyle {
+namespace hyle::services::kv {
 
 wire::Bytes KvStateMachine::build_payload(uint64_t) {
   wire::Bytes payload = encode_ops(pending_);
@@ -23,4 +23,4 @@ void KvStateMachine::apply_payload(const ApplyContext&, wire::View payload) {
 
 void KvStateMachine::restore(wire::View bytes) { state_.restore(bytes); }
 
-} // namespace hyle
+} // namespace hyle::services::kv

@@ -7,9 +7,9 @@
 #include <fstream>
 #include <thread>
 
-LOG_MODULE("morphe.runtime")
+LOG_MODULE("hyle.runtime")
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 malachite::ValidatorSet Runtime::make_vset(const Genesis& g) {
   malachite::ValidatorSet vs;
@@ -98,6 +98,11 @@ static wire::Bytes encode_tx_entry(const EntryOp& op) {
   d.entries.push_back(op);
   return encode_ops(d);
 }
+static wire::Bytes encode_tx_sudo(const SudoOp& op) {
+  Decoded d;
+  d.sudos.push_back(op);
+  return encode_ops(d);
+}
 
 Admit Runtime::submit(const TransferOp& op) {
   Admit a = app_.admit_transfer(op);
@@ -123,11 +128,19 @@ Admit Runtime::submit(const EntryOp& op) {
   }
   return a;
 }
+Admit Runtime::submit(const SudoOp& op) {
+  Admit a = app_.admit_sudo(op);
+  if (a == Admit::Ok && net_) {
+    wire::Bytes tx = encode_tx_sudo(op);
+    net_->broadcast(MsgType::Tx, Channel::Mempool, wire::View(tx.data(), tx.size()));
+  }
+  return a;
+}
 
 void Runtime::regossip() {
   if (!net_) return;
   Decoded d = app_.mempool().snapshot();
-  if (d.mints.empty() && d.transfers.empty() && d.entries.empty()) return;
+  if (d.mints.empty() && d.transfers.empty() && d.entries.empty() && d.sudos.empty()) return;
   wire::Bytes tx = encode_ops(d);
   net_->broadcast(MsgType::Tx, Channel::Mempool, wire::View(tx.data(), tx.size()));
 }
@@ -144,6 +157,7 @@ void Runtime::on_message(const PubKey&, MsgType type, wire::View payload) {
       for (const auto& t : d.transfers) if (app_.admit_transfer(t) == Admit::Ok) fresh = true;
       for (const auto& m : d.mints) if (app_.admit_mint(m) == Admit::Ok) fresh = true;
       for (const auto& e : d.entries) if (app_.admit_entry(e) == Admit::Ok) fresh = true;
+      for (const auto& s : d.sudos) if (app_.admit_sudo(s) == Admit::Ok) fresh = true;
     } catch (const wire::Error&) {
       return;
     }
@@ -312,4 +326,4 @@ void Runtime::run() {
   }
 }
 
-} // namespace hyle::morphe
+} // namespace hyle::services

@@ -263,15 +263,23 @@ wire::Bytes Node::governance_canonical() const {
   return out;
 }
 
+// sha256 over the three length-framed sections. adopt_snapshot must reproduce this layout.
+static Hash composite_of(wire::View chain_id, wire::View gov, wire::View app) {
+  wire::Bytes buf;
+  wire::Writer w(buf);
+  w.bytes(chain_id);
+  w.bytes(gov);
+  w.bytes(app);
+  return sha256(wire::View(buf.data(), buf.size()));
+}
+
 Hash Node::composite_hash() const {
-  // chain_id ++ governance_canonical ++ application snapshot
   if (!composite_dirty_) return composite_cache_;
-  wire::Bytes buf = chain_id_;
-  wire::Bytes gov = governance_canonical();
-  buf.insert(buf.end(), gov.begin(), gov.end());
-  wire::Bytes app = sm_.snapshot();
-  buf.insert(buf.end(), app.begin(), app.end());
-  composite_cache_ = sha256(buf);
+  const wire::Bytes gov = governance_canonical();
+  const wire::Bytes app = sm_.snapshot();
+  composite_cache_ = composite_of(wire::View(chain_id_.data(), chain_id_.size()),
+                                  wire::View(gov.data(), gov.size()),
+                                  wire::View(app.data(), app.size()));
   composite_dirty_ = false;
   return composite_cache_;
 }
@@ -438,8 +446,36 @@ void Node::decide(const malachite::Decision& d) {
         ctx.height = d.height;
         auto pit = proposers_.find({d.height, d.round.value});
         if (pit != proposers_.end()) ctx.proposer = pit->second;
+        // The active validator set at this height (validators_for -- the +2-scheduled set that
+        // committed this block, not the immediate governance membership), for an app that runs
+        // its own vote-gated acts.
+        const malachite::ValidatorSet setH = validators_for(d.height);
+        for (const auto& v : setH) {
+          PubKey k{};
+          std::memcpy(k.data(), v.public_key.data(), k.size());
+          ctx.members.push_back(k);
+        }
+        ctx.quorum = static_cast<unsigned>((2 * setH.size()) / 3 + 1);
         sm_.apply_payload(ctx, wire::View(e.payload));
         apply_gov(d.height, e.gov);
+        // Validators dropped from the active set at this height, so the app can reclaim their
+        // per-validator state. Uses validators_for, not the governance settle, so a validator
+        // still active during the +2 window is not cleared early.
+        if (d.height >= 2) {
+          const malachite::ValidatorSet setPrev = validators_for(d.height - 1);
+          std::vector<PubKey> removed;
+          for (const auto& p : setPrev) {
+            bool still = false;
+            for (const auto& c : setH)
+              if (c.public_key == p.public_key) { still = true; break; }
+            if (!still) {
+              PubKey k{};
+              std::memcpy(k.data(), p.public_key.data(), k.size());
+              removed.push_back(k);
+            }
+          }
+          if (!removed.empty()) sm_.on_validators_removed(removed);
+        }
         composite_dirty_ = true;
         applied = true;
         last_att_.height = d.height;
@@ -551,11 +587,9 @@ Snapshot Node::build_snapshot(std::vector<Attestation> attestations) const {
 }
 
 bool Node::adopt_snapshot(const Snapshot& s, const malachite::ValidatorSet& trusted) {
-  // must match composite_hash()'s layout: chain_id ++ governance ++ app
-  wire::Bytes buf = chain_id_;
-  buf.insert(buf.end(), s.governance.begin(), s.governance.end());
-  buf.insert(buf.end(), s.app.begin(), s.app.end());
-  const Hash expected = sha256(buf);
+  const Hash expected = composite_of(wire::View(chain_id_.data(), chain_id_.size()),
+                                     wire::View(s.governance.data(), s.governance.size()),
+                                     wire::View(s.app.data(), s.app.size()));
 
   uint64_t total = 0;
   for (const auto& v : trusted) total += v.voting_power ? v.voting_power : 1;

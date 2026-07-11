@@ -1,5 +1,5 @@
-#ifndef HYLE_MORPHE_MEMPOOL_H
-#define HYLE_MORPHE_MEMPOOL_H
+#ifndef HYLE_SERVICES_MEMPOOL_H
+#define HYLE_SERVICES_MEMPOOL_H
 
 #include <hyle/core/crypto.h>
 #include <hyle/services/config.h>
@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <string>
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 enum class Admit {
   Ok,
@@ -35,6 +35,7 @@ public:
   Admit admit_transfer(const TransferOp& op, uint64_t committed_seq, uint64_t committed_balance);
   Admit admit_entry(const EntryOp& op, uint64_t committed_seq, uint64_t committed_balance);
   Admit admit_mint(const MintOp& op);
+  Admit admit_sudo(const SudoOp& op, uint64_t committed_seq, uint64_t committed_balance);
 
   Decoded drain(size_t max);
 
@@ -45,7 +46,7 @@ public:
   const Config& config() const { return cfg_; }
 
 private:
-  enum class Kind : uint8_t { Mint, Transfer, Entry };
+  enum class Kind : uint8_t { Mint, Transfer, Entry, Sudo };
   struct Slot { Kind kind; size_t idx; };
 
   Hash id_of(wire::View sign_bytes, const Sig& sig) const;
@@ -60,12 +61,13 @@ private:
   std::vector<MintOp> mints_;
   std::vector<TransferOp> transfers_;
   std::vector<EntryOp> entries_;
+  std::vector<SudoOp> sudos_;
   std::vector<Slot> order_;
   boost::unordered_flat_set<Hash, boost::hash<Hash>> seen_;
   boost::unordered_flat_map<PubKey, uint64_t, boost::hash<PubKey>> next_seq_;
   boost::unordered_flat_map<PubKey, uint64_t, boost::hash<PubKey>> debit_;
 };
 
-} // namespace hyle::morphe
+} // namespace hyle::services
 
 #endif

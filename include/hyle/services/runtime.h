@@ -1,5 +1,5 @@
-#ifndef HYLE_MORPHE_RUNTIME_H
-#define HYLE_MORPHE_RUNTIME_H
+#ifndef HYLE_SERVICES_RUNTIME_H
+#define HYLE_SERVICES_RUNTIME_H
 
 #include <hyle/core/node.h>
 #include <hyle/services/app.h>
@@ -15,7 +15,7 @@
 #include <memory>
 #include <string>
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 class Runtime {
 public:
@@ -38,6 +38,7 @@ public:
   Admit submit(const TransferOp& op);
   Admit submit(const MintOp& op);
   Admit submit(const EntryOp& op);
+  Admit submit(const SudoOp& op);
   void regossip();
 
   void run_to(uint64_t goal);
@@ -89,6 +90,6 @@ private:
   std::map<uint64_t, std::map<std::string, Hash>> proposal_seen_;
 };
 
-} // namespace hyle::morphe
+} // namespace hyle::services
 
 #endif

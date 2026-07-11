@@ -1,5 +1,5 @@
-#ifndef HYLE_MORPHE_HEX_H
-#define HYLE_MORPHE_HEX_H
+#ifndef HYLE_SERVICES_HEX_H
+#define HYLE_SERVICES_HEX_H
 
 #include <array>
 #include <cstdint>
@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 inline std::string hex_encode(const uint8_t* p, size_t n) {
   static const char* H = "0123456789abcdef";
@@ -60,6 +60,6 @@ std::array<uint8_t, N> hex_decode_fixed(const std::string& s) {
   return out;
 }
 
-}  // namespace hyle::morphe
+}  // namespace hyle::services
 
 #endif

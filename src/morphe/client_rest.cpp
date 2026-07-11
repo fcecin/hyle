@@ -12,6 +12,7 @@
 #include <vector>
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 namespace beast = boost::beast;
 namespace http = beast::http;

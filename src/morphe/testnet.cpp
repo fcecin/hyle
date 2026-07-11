@@ -11,6 +11,7 @@
 namespace fs = std::filesystem;
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 namespace {
 void write_file(const std::string& path, const std::string& content) {

@@ -1,5 +1,5 @@
-#ifndef HYLE_MORPHE_OPS_H
-#define HYLE_MORPHE_OPS_H
+#ifndef HYLE_SERVICES_OPS_H
+#define HYLE_SERVICES_OPS_H
 
 #include <hyle/core/crypto.h>
 #include <hyle/core/wire.h>
@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <vector>
 
-namespace hyle::morphe {
+namespace hyle::services {
+
+using kv::PowVerifier;
 
 struct MintOp {
   PubKey beneficiary{};
@@ -45,20 +47,44 @@ struct EntryOp {
   Sig sig{};
 };
 
+// Governance runs an act with its guards waived (no signature, sequence, fee, or ownership
+// check), authorized by a member supermajority collected on chain in a 'g' cell (see Pending).
+// Propose opens the cell and casts the proposer's vote; Approve adds one; the vote reaching
+// quorum executes the act in that block.
+enum class SudoKind : uint8_t {
+  Propose = 0,
+  Approve = 1,
+};
+
+// inner is an op batch carried on Propose only; Approve names the proposal by proposer.
+// inner_hash binds a vote to the exact act.
+struct SudoOp {
+  SudoKind kind = SudoKind::Propose;
+  PubKey signer{};
+  uint64_t seq = 0;
+  PubKey proposer{};   // == signer on Propose
+  Hash inner_hash{};
+  wire::Bytes inner;   // Propose only
+  Sig sig{};
+};
+
 struct Decoded {
   uint64_t timestamp = 0;
   std::vector<MintOp> mints;
   std::vector<TransferOp> transfers;
   std::vector<EntryOp> entries;
+  std::vector<SudoOp> sudos;
 };
 
-// [timestamp][count(mints)][mints][count(transfers)][transfers][count(entries)][entries].
+// [timestamp][count(mints)][mints][count(transfers)][transfers][count(entries)][entries]
+// [count(sudos)][sudos].
 wire::Bytes encode_ops(const Decoded& d);
 Decoded decode_ops(wire::View in);
 
 Hash tx_id(wire::View chain_id, const MintOp& o);
 Hash tx_id(wire::View chain_id, const TransferOp& o);
 Hash tx_id(wire::View chain_id, const EntryOp& o);
+Hash tx_id(wire::View chain_id, const SudoOp& o);
 
 wire::Bytes mint_sign_bytes(wire::View chain_id, const PubKey& beneficiary, uint64_t nonce,
                             const Hash& solution);
@@ -66,6 +92,9 @@ wire::Bytes xfer_sign_bytes(wire::View chain_id, const PubKey& from, wire::View 
                             uint64_t seq);
 wire::Bytes entry_sign_bytes(wire::View chain_id, EntryKind kind, const PubKey& signer, wire::View name,
                              uint64_t seq, uint64_t amount, const PubKey& aux, wire::View payload);
+
+wire::Bytes sudo_sign_bytes(wire::View chain_id, SudoKind kind, const PubKey& signer, uint64_t seq,
+                            const PubKey& proposer, const Hash& inner_hash);
 
 MintOp make_mint(const PowVerifier& v, const Hash& epoch_key, const KeyPair& beneficiary,
                  unsigned min_diff, uint64_t start_nonce = 0, wire::View chain_id = {});
@@ -80,6 +109,18 @@ EntryOp make_entry_give(const KeyPair& owner, wire::View name, uint64_t seq, con
                         wire::View chain_id = {});
 EntryOp make_entry_rip(wire::View name, const PubKey& culler);
 
-} // namespace hyle::morphe
+SudoOp make_sudo_propose(const KeyPair& proposer, uint64_t seq, wire::View inner,
+                         wire::View chain_id = {});
+SudoOp make_sudo_approve(const KeyPair& voter, uint64_t seq, const PubKey& proposer,
+                         const Hash& inner_hash, wire::View chain_id = {});
+
+// A well-formed transfer destination: 'a'+pubkey (33 bytes) or 'e'+name (>= 2 bytes).
+bool valid_transfer_dest(wire::View to);
+
+// Whether inner is a runnable sudo act: a non-empty op batch of transfers and entries only
+// (no mint, no nested sudo), none leaving an entry owned by the mint sentinel. Non-mutating.
+bool valid_sudo_inner(wire::View inner);
+
+} // namespace hyle::services
 
 #endif

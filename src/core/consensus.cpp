@@ -88,11 +88,24 @@ void Governance::set_pending(const std::vector<PendingVote>& v) {
   settle();
 }
 
+// A member may back at most this many open proposals, bounding the pending set (part of the
+// AppHash) against a validator voting for unbounded distinct targets. Per-member, so it cannot
+// block other members' proposals.
+static constexpr unsigned kMaxPendingPerMember = 16;
+
 bool Governance::vote(const Id& voter, Kind kind, const Id& target, const Id& data) {
   if (!isMember(voter)) return false;
   if (kind == Kind::Add && isMember(target)) return false;
   if (kind == Kind::Remove && !isMember(target)) return false;
   PropKey key{kind, target, kind == Kind::Add ? data : Id{}};
+  auto existing = votes_.find(key);
+  const bool new_backing = existing == votes_.end() || existing->second.count(voter) == 0;
+  if (new_backing) {
+    unsigned mine = 0;
+    for (const auto& kv : votes_)
+      if (kv.second.count(voter)) ++mine;
+    if (mine >= kMaxPendingPerMember) return false;  // only new backing counts against the cap
+  }
   votes_[key].insert(voter);
   LOGTRACE << "governance: vote kind " << static_cast<int>(kind) << " tally " << votes_[key].size()
            << "/" << quorum() << VAL("target", target);

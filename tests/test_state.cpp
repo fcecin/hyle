@@ -7,6 +7,7 @@
 #include <vector>
 
 using namespace hyle;
+using namespace hyle::services::kv;
 
 static wire::View sv(const std::string& s) {
   return wire::View(reinterpret_cast<const uint8_t*>(s.data()), s.size());

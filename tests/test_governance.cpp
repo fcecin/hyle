@@ -216,4 +216,23 @@ BOOST_AUTO_TEST_CASE(SettleCascadesRemoveThenBlockedAdd) {
   BOOST_TEST(g.size() == 4u);
 }
 
+// One validator must not be able to bloat the replicated pending set (it rides the AppHash)
+// by voting for unbounded distinct never-quorum targets. The budget is per-member, so a bad
+// validator fills only its own and never blocks anyone else.
+BOOST_AUTO_TEST_CASE(PendingVotesAreBoundedPerMember) {
+  Governance g(gen({1, 2, 3, 4}), /*cap=*/100);
+  // id(1) alone can't reach quorum (1 of 4), so each distinct Add just sits pending.
+  for (int t = 0; t < 16; ++t) g.vote(id(1), Kind::Add, id(static_cast<uint8_t>(20 + t)));
+  BOOST_TEST(g.pending().size() == 16u);
+
+  g.vote(id(1), Kind::Add, id(90));  // 17th distinct proposal from id(1): refused
+  BOOST_TEST(g.pending().size() == 16u);
+
+  g.vote(id(1), Kind::Add, id(20));  // re-backing one it already holds is free
+  BOOST_TEST(g.pending().size() == 16u);
+
+  g.vote(id(2), Kind::Add, id(90));  // a different member has its own budget
+  BOOST_TEST(g.pending().size() == 17u);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

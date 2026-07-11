@@ -15,6 +15,7 @@
 #include <deque>
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 inline constexpr uint8_t MSG_TYPE_MAX = static_cast<uint8_t>(MsgType::HelloAuth);
 

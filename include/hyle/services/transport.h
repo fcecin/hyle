@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <functional>
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 // Values are wire-stable.
 enum class MsgType : uint8_t {
@@ -33,6 +33,6 @@ struct Transport {
   std::function<void(const PubKey& src, MsgType type, wire::View payload)> on_recv;
 };
 
-} // namespace hyle::morphe
+} // namespace hyle::services
 
 #endif

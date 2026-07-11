@@ -13,6 +13,7 @@
 namespace json = boost::json;
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 namespace {
 

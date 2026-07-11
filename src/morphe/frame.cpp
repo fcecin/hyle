@@ -3,6 +3,7 @@
 #include <cstring>
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 uint32_t chain_tag_of(wire::View chain_id) {
   const Hash h = sha256(chain_id);

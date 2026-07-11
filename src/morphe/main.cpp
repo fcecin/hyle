@@ -63,7 +63,7 @@ void write_file(const std::string& path, const std::string& content) {
   f << content;
 }
 
-std::string to_hex_str(const uint8_t* p, size_t n) { return morphe::hex_encode(p, n); }
+std::string to_hex_str(const uint8_t* p, size_t n) { return services::hex_encode(p, n); }
 
 void jlog(const char* level, const char* event, const std::string& data) {
   char ts[32];
@@ -135,23 +135,23 @@ int do_man(const std::string& topic) {
 }
 
 int do_pubkey(const std::string& home) {
-  const KeyPair key = morphe::load_key(home + "/node.key");
-  std::printf("%s\n", morphe::pubkey_hex(key.pub).c_str());
+  const KeyPair key = services::load_key(home + "/node.key");
+  std::printf("%s\n", services::pubkey_hex(key.pub).c_str());
   return 0;
 }
 
 int do_keygen(const std::string& out) {
   const KeyPair kp = KeyPair::generate();
-  morphe::save_key(out, kp);
-  std::printf("wrote key %s\npubkey %s\n", out.c_str(), morphe::pubkey_hex(kp.pub).c_str());
+  services::save_key(out, kp);
+  std::printf("wrote key %s\npubkey %s\n", out.c_str(), services::pubkey_hex(kp.pub).c_str());
   return 0;
 }
 
 int do_init(const std::string& home) {
   fs::create_directories(home);
   const KeyPair kp = KeyPair::generate();
-  morphe::save_key(home + "/node.key", kp);
-  morphe::Genesis g;
+  services::save_key(home + "/node.key", kp);
+  services::Genesis g;
   g.chain_id = "morphe-devnet";
   g.validators = {kp.pub};
   g.allocations = {{kp.pub, 1000000}};
@@ -159,15 +159,15 @@ int do_init(const std::string& home) {
   write_file(home + "/config.txt", "block_pace_ms 1000\ncontrol_port 46000\nclient_port 47000\n");
   std::printf("initialized %s (solo)\n  chain_id %s\n  validator %s\n  genesis_hash %s\n"
               "  control_port 46000  client_port 47000\n",
-              home.c_str(), g.chain_id.c_str(), morphe::pubkey_hex(kp.pub).c_str(),
-              morphe::pubkey_hex(g.hash()).c_str());
+              home.c_str(), g.chain_id.c_str(), services::pubkey_hex(kp.pub).c_str(),
+              services::pubkey_hex(g.hash()).c_str());
   return 0;
 }
 
 int do_testnet(int n, const std::string& dir, uint16_t base_port) {
-  const morphe::Genesis g = morphe::generate_testnet(dir, n, base_port);
+  const services::Genesis g = morphe::generate_testnet(dir, n, base_port);
   std::printf("generated %d-validator testnet in %s\n  chain_id %s\n  genesis_hash %s\n", n,
-              dir.c_str(), g.chain_id.c_str(), morphe::pubkey_hex(g.hash()).c_str());
+              dir.c_str(), g.chain_id.c_str(), services::pubkey_hex(g.hash()).c_str());
   for (int i = 0; i < n; ++i)
     std::printf("  node%d: port %u  (morphe start %s/node%d)\n", i,
                 static_cast<unsigned>(base_port + i), dir.c_str(), i);
@@ -175,8 +175,8 @@ int do_testnet(int n, const std::string& dir, uint16_t base_port) {
 }
 
 int do_genesis(const std::string& sub, const std::string& path) {
-  const morphe::Genesis g = morphe::Genesis::parse(read_file(path));
-  if (sub == "hash") { std::printf("%s\n", morphe::pubkey_hex(g.hash()).c_str()); return 0; }
+  const services::Genesis g = services::Genesis::parse(read_file(path));
+  if (sub == "hash") { std::printf("%s\n", services::pubkey_hex(g.hash()).c_str()); return 0; }
   std::string err;
   if (g.validate(err)) {
     std::printf("ok: %zu validators, chain '%s'\n", g.validators.size(), g.chain_id.c_str());
@@ -188,14 +188,14 @@ int do_genesis(const std::string& sub, const std::string& path) {
 
 struct Driver {
   boost::asio::io_context& io;
-  morphe::Runtime& rt;
+  services::Runtime& rt;
   boost::asio::steady_timer timer;
   uint64_t pace_ms;
   int idle = 0;
   uint64_t last_h = 0;
   size_t last_peers = ~size_t(0);
   std::chrono::steady_clock::time_point last_commit{};
-  Driver(boost::asio::io_context& io_, morphe::Runtime& rt_, uint64_t pace)
+  Driver(boost::asio::io_context& io_, services::Runtime& rt_, uint64_t pace)
       : io(io_), rt(rt_), timer(io_), pace_ms(pace) {}
   void tick() {
     bool prog = rt.pump();
@@ -218,8 +218,8 @@ struct Driver {
 };
 
 int do_start(const std::string& home) {
-  const morphe::Genesis g = morphe::Genesis::parse(read_file(home + "/genesis.txt"));
-  const KeyPair key = morphe::load_key(home + "/node.key");
+  const services::Genesis g = services::Genesis::parse(read_file(home + "/genesis.txt"));
+  const KeyPair key = services::load_key(home + "/node.key");
   std::string err;
   if (!g.validate(err)) { std::fprintf(stderr, "bad genesis: %s\n", err.c_str()); return 1; }
   const uint64_t pace = morphe::read_config_u64(home, "block_pace_ms", 1000);
@@ -228,7 +228,7 @@ int do_start(const std::string& home) {
 
   boost::asio::io_context io;
   std::optional<morphe::AsioMesh> mesh;
-  std::optional<morphe::Runtime> rt_opt;
+  std::optional<services::Runtime> rt_opt;
   if (solo) {
     rt_opt.emplace(g, key, pace);
   } else {
@@ -241,9 +241,9 @@ int do_start(const std::string& home) {
     fs::create_directories(home + "/evidence");
     rt_opt->set_evidence_dir(home + "/evidence");
   }
-  morphe::Runtime& rt = *rt_opt;
+  services::Runtime& rt = *rt_opt;
 
-  rt.app().add_on_commit([](const morphe::CommitEvent& e) {
+  rt.app().add_on_commit([](const services::CommitEvent& e) {
     size_t applied = 0;
     for (const auto& t : e.txs) if (t.second) ++applied;
     jlog("info", "block_decided",
@@ -256,7 +256,7 @@ int do_start(const std::string& home) {
   });
 
   jlog("info", "node_start",
-       "{\"chain\":\"" + g.chain_id + "\",\"genesis\":\"" + morphe::pubkey_hex(g.hash()) +
+       "{\"chain\":\"" + g.chain_id + "\",\"genesis\":\"" + services::pubkey_hex(g.hash()) +
            "\",\"mode\":\"" + (solo ? "solo" : "mesh") + "\",\"peers\":" + std::to_string(peers.size()) +
            "}");
 
@@ -340,9 +340,9 @@ int do_config(const std::string& home) {
   std::printf("node.key      %s\n", fs::exists(home + "/node.key") ? "present" : "MISSING");
   if (fs::exists(home + "/genesis.txt")) {
     try {
-      const morphe::Genesis g = morphe::Genesis::parse(read_file(home + "/genesis.txt"));
+      const services::Genesis g = services::Genesis::parse(read_file(home + "/genesis.txt"));
       std::printf("chain_id      %s\n", g.chain_id.c_str());
-      std::printf("genesis_hash  %s\n", morphe::pubkey_hex(g.hash()).c_str());
+      std::printf("genesis_hash  %s\n", services::pubkey_hex(g.hash()).c_str());
       std::printf("validators    %zu\n", g.validators.size());
     } catch (const std::exception& e) { std::printf("genesis.txt   INVALID: %s\n", e.what()); }
   } else {
@@ -372,18 +372,18 @@ int do_doctor(const std::string& home) {
   int fails = 0;
   std::string mypk;
   try {
-    const KeyPair k = morphe::load_key(home + "/node.key");
-    mypk = morphe::pubkey_hex(k.pub);
+    const KeyPair k = services::load_key(home + "/node.key");
+    mypk = services::pubkey_hex(k.pub);
     line("ok", "node.key loads; identity " + mypk);
   } catch (const std::exception& e) { line("FAIL", std::string("node.key: ") + e.what()); ++fails; }
 
   try {
-    const morphe::Genesis g = morphe::Genesis::parse(read_file(home + "/genesis.txt"));
+    const services::Genesis g = services::Genesis::parse(read_file(home + "/genesis.txt"));
     std::string err;
     if (!g.validate(err)) { line("FAIL", "genesis invalid: " + err); ++fails; }
     else {
       bool mine = false;
-      for (const auto& v : g.validators) if (morphe::pubkey_hex(v) == mypk) mine = true;
+      for (const auto& v : g.validators) if (services::pubkey_hex(v) == mypk) mine = true;
       line("ok", "genesis valid; chain " + g.chain_id + "; " + std::to_string(g.validators.size()) +
                      " validators; this node is " + (mine ? "a genesis validator" : "NOT a genesis validator"));
     }

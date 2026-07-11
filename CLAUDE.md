@@ -12,7 +12,7 @@ A single BFT chain whose replicated state machine is an in-memory key-value stor
 - Standalone first, pluggable later. The network is self-contained (a persistent TCP mesh over Boost.Asio behind a `hyle::Transport` seam). Pluggable transport is a later refactor; the seam exists from day one.
 - Base-native governance, composite state. Governance is solved once at layer 1. `AppHash = hash(chain_id ++ governance ++ application)`. The base owns the value envelope `[parent AppHash][gov ops][opaque app payload]`, the composite hash, and the +2 validator-set schedule; the app is payload-only and never sees a governance op. One-height lag (value H embeds AppHash(H-1)).
 - Snapshot state sync: a joiner adopts the composite state at a height, trusting a quorum of member attestations over the AppHash. No history replay.
-- Native token. The chain has its own native credit, self-minted by block reward to each committed block's proposer (core surfaces the proposer via `ApplyContext`; the app mints). It is not reconciled against any server's local credit; the bridge to an external market is off-chain. The economy is layer 2 (`kv`: `Ledger`).
+- Native token. The chain has its own native credit, minted by permissionless proof-of-work (a `MintOp` carries a solution against the epoch key; reward scales with difficulty) plus governance sudo out of the mint sentinel. It is not reconciled against any server's local credit; the bridge to an external market is off-chain. The economy is a layer-2 services schema (`hyle::services`: `App` -- accounts, K,V entries with rent, PoW mint, governance/sudo), built on the kv facility's generic `State`. Core surfaces the committed proposer via `ApplyContext`; an app may reward it, but `App` does not (only PoW and sudo mint).
 
 ## Dependencies
 
@@ -40,24 +40,27 @@ Redirect build output to a file and grep it; do not tail the live pipe.
 ## Layout (three layers: core, services, morphe)
 
 ```
-include/hyle/core/       layer 1 (lib: hyle): wire, crypto, consensus, snapshot,
-                         state_machine (the app seam), node (the engine). Transport-
-                         and app-agnostic. Never depends on a higher layer.
-include/hyle/services/   layer 2 (lib: hyle_services): the node minus the deployment shell.
-                         Modules: kv/ (state, ops, kv_state_machine, ledger, pow); the
-                         economy app (app, ops, schema, config, genesis); node machinery
-                         (mempool, runtime, transport seam); util (keys, keyring, hex).
+include/hyle/core/       layer 1 (lib: hyle, namespace hyle): wire, crypto, consensus,
+                         snapshot, state_machine (the app seam), node (the engine).
+                         Transport- and app-agnostic. Never depends on a higher layer.
+include/hyle/services/   layer 2 (lib: hyle_services, namespace hyle::services): the node
+                         minus the deployment shell. kv/ (namespace hyle::services::kv) is
+                         the KV facility: generic State store, ops, the minimal
+                         KvStateMachine, PoW verifier. On top: the account/entry economy
+                         schema (app, ops, schema, config, genesis), node machinery
+                         (mempool, runtime, transport seam), util (keys, keyring, hex).
                          Depends on core.
-include/hyle/morphe/     layer 3 (lib: hyle_morphe): the shell. The TCP transport (AsioMesh
-                         + frame wire), the RPC/REST surfaces, the testnet generator, and
-                         the morphe/techne executables. Depends on services.
+include/hyle/morphe/     layer 3 (lib: hyle_morphe, namespace hyle::morphe): the shell. The
+                         TCP transport (AsioMesh + frame wire), the RPC/REST surfaces, the
+                         testnet generator, and the morphe/techne executables. Depends on
+                         services.
 src/{core,services,services/kv,morphe,techne}/   matching sources
 tests/                   hyletests / embedtests / morphetests / e2etests, filter by suite
 docs/                    APPLICATION, TRANSPORT (the public seams); COMETBFT_MAPPING,
                          CORNER_CASES (coverage)
 ```
 
-An include is `<hyle/core/node.h>` or `<hyle/services/kv/state.h>`. Lower layers never include from a higher one. (The economy keeps the `hyle::morphe` namespace even though it lives in services, to be tidied later.)
+An include is `<hyle/core/node.h>` or `<hyle/services/kv/state.h>`. Lower layers never include from a higher one. Namespace matches layer: `hyle` (core), `hyle::services` (economy schema + machinery + util), `hyle::services::kv` (the KV facility), `hyle::morphe` (shell). The economy is a services schema built on the kv facility's generic State; `morphe` is only the example shell.
 
 ## Coding practices
 

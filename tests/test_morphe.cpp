@@ -41,8 +41,10 @@
 #include <vector>
 
 using namespace hyle;
+using namespace hyle::services;
+using namespace hyle::services::kv;
 
-static void apply_block(morphe::App& app, uint64_t height) {
+static void apply_block(services::App& app, uint64_t height) {
   wire::Bytes p = app.build_payload(height);
   app.apply_payload(ApplyContext{height, PubKey{}}, wire::View(p.data(), p.size()));
 }
@@ -59,15 +61,15 @@ static std::string to_hex(const uint8_t* p, size_t n) {
   for (size_t i = 0; i < n; ++i) { s.push_back(H[p[i] >> 4]); s.push_back(H[p[i] & 0x0f]); }
   return s;
 }
-static std::string tx_hex(const morphe::TransferOp& op) {
-  morphe::Decoded d;
+static std::string tx_hex(const services::TransferOp& op) {
+  services::Decoded d;
   d.transfers.push_back(op);
-  wire::Bytes b = morphe::encode_ops(d);
+  wire::Bytes b = services::encode_ops(d);
   return to_hex(b.data(), b.size());
 }
 static wire::Bytes rpc_acct_key(const PubKey& pk) {
   wire::Bytes b;
-  b.push_back(morphe::ACCOUNT_PREFIX);
+  b.push_back(services::ACCOUNT_PREFIX);
   b.insert(b.end(), pk.begin(), pk.end());
   return b;
 }
@@ -80,7 +82,7 @@ static uint64_t ju64(const json::value& v) {
 BOOST_AUTO_TEST_SUITE(MorpheSmoke)
 
 BOOST_AUTO_TEST_CASE(SingleNodeDecidesWithMorpheApp) {
-  morphe::App app;
+  services::App app;
   std::vector<StateMachine*> sms{&app};
   LocalCluster c(sms);
   c.run(3, 1);
@@ -89,7 +91,7 @@ BOOST_AUTO_TEST_CASE(SingleNodeDecidesWithMorpheApp) {
 }
 
 BOOST_AUTO_TEST_CASE(FourNodesAgreeOnMorpheAppHash) {
-  std::vector<morphe::App> apps(4);
+  std::vector<services::App> apps(4);
   std::vector<StateMachine*> sms;
   for (auto& a : apps) sms.push_back(&a);
   LocalCluster c(sms);
@@ -103,11 +105,11 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(MorpheEconomy)
 
 BOOST_AUTO_TEST_CASE(MintFundsAccountByRewardMinusFee) {
-  morphe::Config cfg;
-  morphe::App app(cfg);
+  services::Config cfg;
+  services::App app(cfg);
   KeyPair bene = KeyPair::generate();
   Sha256PowVerifier v;
-  morphe::MintOp m = morphe::make_mint(v, app.mint_key(), bene, /*min_diff=*/4);
+  services::MintOp m = services::make_mint(v, app.mint_key(), bene, /*min_diff=*/4);
   const unsigned d = pow_difficulty(m.solution);
   const uint64_t expected = app.mint_reward(d) - cfg.fee_mint;
 
@@ -121,28 +123,28 @@ BOOST_AUTO_TEST_CASE(MintFundsAccountByRewardMinusFee) {
 }
 
 BOOST_AUTO_TEST_CASE(CommittedMintReAdmitsAsDuplicate) {
-  morphe::App app;
+  services::App app;
   KeyPair bene = KeyPair::generate();
   Sha256PowVerifier v;
-  morphe::MintOp m = morphe::make_mint(v, app.mint_key(), bene, 4);
-  BOOST_TEST((app.admit_mint(m) == morphe::Admit::Ok));
+  services::MintOp m = services::make_mint(v, app.mint_key(), bene, 4);
+  BOOST_TEST((app.admit_mint(m) == services::Admit::Ok));
   app.submit_mint(m);
   apply_block(app, 1);
-  BOOST_TEST((app.admit_mint(m) == morphe::Admit::Duplicate));
+  BOOST_TEST((app.admit_mint(m) == services::Admit::Duplicate));
 }
 
 BOOST_AUTO_TEST_CASE(RipOfMissingEntryRejectedAtAdmission) {
-  morphe::App app;
+  services::App app;
   wire::Bytes name = {'g', 'h', 'o', 's', 't'};
-  morphe::EntryOp rip = morphe::make_entry_rip(kv_view(name), KeyPair::generate().pub);
-  BOOST_TEST((app.admit_entry(rip) != morphe::Admit::Ok));
+  services::EntryOp rip = services::make_entry_rip(kv_view(name), KeyPair::generate().pub);
+  BOOST_TEST((app.admit_entry(rip) != services::Admit::Ok));
 }
 
 BOOST_AUTO_TEST_CASE(MintReplayCreditsOnce) {
-  morphe::App app;
+  services::App app;
   KeyPair bene = KeyPair::generate();
   Sha256PowVerifier v;
-  morphe::MintOp m = morphe::make_mint(v, app.mint_key(), bene, 4);
+  services::MintOp m = services::make_mint(v, app.mint_key(), bene, 4);
   const uint64_t one = app.mint_reward(pow_difficulty(m.solution)) - app.config().fee_mint;
 
   app.submit_mint(m);
@@ -155,13 +157,13 @@ BOOST_AUTO_TEST_CASE(MintReplayCreditsOnce) {
 }
 
 BOOST_AUTO_TEST_CASE(BelowFloorMintDiscarded) {
-  morphe::Config cfg;
+  services::Config cfg;
   cfg.fee_mint = 1000000;
   cfg.reward_base = 1;
-  morphe::App app(cfg);
+  services::App app(cfg);
   KeyPair bene = KeyPair::generate();
   Sha256PowVerifier v;
-  morphe::MintOp m = morphe::make_mint(v, app.mint_key(), bene, /*min_diff=*/2);
+  services::MintOp m = services::make_mint(v, app.mint_key(), bene, /*min_diff=*/2);
   app.submit_mint(m);
   apply_block(app, 1);
   BOOST_TEST(!app.account_exists(bene.pub));
@@ -169,10 +171,10 @@ BOOST_AUTO_TEST_CASE(BelowFloorMintDiscarded) {
 }
 
 BOOST_AUTO_TEST_CASE(TamperedMintSignatureRejected) {
-  morphe::App app;
+  services::App app;
   KeyPair bene = KeyPair::generate();
   Sha256PowVerifier v;
-  morphe::MintOp m = morphe::make_mint(v, app.mint_key(), bene, 4);
+  services::MintOp m = services::make_mint(v, app.mint_key(), bene, 4);
   m.sig[0] ^= 0xff;
   app.submit_mint(m);
   apply_block(app, 1);
@@ -180,14 +182,14 @@ BOOST_AUTO_TEST_CASE(TamperedMintSignatureRejected) {
 }
 
 BOOST_AUTO_TEST_CASE(SnapshotRestoreRoundTrips) {
-  morphe::App app;
+  services::App app;
   KeyPair bene = KeyPair::generate();
   Sha256PowVerifier v;
-  app.submit_mint(morphe::make_mint(v, app.mint_key(), bene, 4));
+  app.submit_mint(services::make_mint(v, app.mint_key(), bene, 4));
   apply_block(app, 1);
   const wire::Bytes snap = app.snapshot();
 
-  morphe::App app2;
+  services::App app2;
   app2.restore(wire::View(snap.data(), snap.size()));
   BOOST_TEST(app2.balance(bene.pub) == app.balance(bene.pub));
   BOOST_TEST(app2.mint_seen_count() == app.mint_seen_count());
@@ -199,12 +201,12 @@ BOOST_AUTO_TEST_CASE(SnapshotRestoreRoundTrips) {
 }
 
 BOOST_AUTO_TEST_CASE(MintConvergesAcrossNodes) {
-  std::vector<morphe::App> apps(4);
+  std::vector<services::App> apps(4);
   std::vector<StateMachine*> sms;
   for (auto& a : apps) sms.push_back(&a);
   KeyPair bene = KeyPair::generate();
   Sha256PowVerifier v;
-  apps[0].submit_mint(morphe::make_mint(v, apps[0].mint_key(), bene, 4));
+  apps[0].submit_mint(services::make_mint(v, apps[0].mint_key(), bene, 4));
 
   LocalCluster c(sms);
   c.run(8, 4);
@@ -221,17 +223,17 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(MorpheTransfers)
 
 BOOST_AUTO_TEST_CASE(TransferMovesCreditsBurnsFeeAdvancesSequence) {
-  morphe::App app;
+  services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
   Sha256PowVerifier v;
-  app.submit_mint(morphe::make_mint(v, app.mint_key(), A, /*min_diff=*/6));
+  app.submit_mint(services::make_mint(v, app.mint_key(), A, /*min_diff=*/6));
   apply_block(app, 1);
   const uint64_t funded = app.balance(A.pub);
   BOOST_REQUIRE(funded >= 21u);
 
-  const wire::Bytes bkey = morphe::account_key(B.pub);
-  app.submit_transfer(morphe::make_transfer(A, kv_view(bkey), 20, /*seq=*/0));
+  const wire::Bytes bkey = services::account_key(B.pub);
+  app.submit_transfer(services::make_transfer(A, kv_view(bkey), 20, /*seq=*/0));
   apply_block(app, 2);
 
   BOOST_TEST(app.balance(A.pub) == funded - 20u - app.config().fee_transfer);
@@ -241,14 +243,14 @@ BOOST_AUTO_TEST_CASE(TransferMovesCreditsBurnsFeeAdvancesSequence) {
 }
 
 BOOST_AUTO_TEST_CASE(TransferReplayRejectedBySequence) {
-  morphe::App app;
+  services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
   Sha256PowVerifier v;
-  app.submit_mint(morphe::make_mint(v, app.mint_key(), A, 6));
+  app.submit_mint(services::make_mint(v, app.mint_key(), A, 6));
   apply_block(app, 1);
-  const wire::Bytes bkey = morphe::account_key(B.pub);
-  const morphe::TransferOp t = morphe::make_transfer(A, kv_view(bkey), 10, /*seq=*/0);
+  const wire::Bytes bkey = services::account_key(B.pub);
+  const services::TransferOp t = services::make_transfer(A, kv_view(bkey), 10, /*seq=*/0);
 
   app.submit_transfer(t);
   apply_block(app, 2);
@@ -262,16 +264,16 @@ BOOST_AUTO_TEST_CASE(TransferReplayRejectedBySequence) {
 }
 
 BOOST_AUTO_TEST_CASE(InsufficientTransferRejected) {
-  morphe::App app;
+  services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
   Sha256PowVerifier v;
-  app.submit_mint(morphe::make_mint(v, app.mint_key(), A, 4));
+  app.submit_mint(services::make_mint(v, app.mint_key(), A, 4));
   apply_block(app, 1);
   const uint64_t funded = app.balance(A.pub);
 
-  const wire::Bytes bkey = morphe::account_key(B.pub);
-  app.submit_transfer(morphe::make_transfer(A, kv_view(bkey), funded + 100, /*seq=*/0));
+  const wire::Bytes bkey = services::account_key(B.pub);
+  app.submit_transfer(services::make_transfer(A, kv_view(bkey), funded + 100, /*seq=*/0));
   apply_block(app, 2);
   BOOST_TEST(!app.account_exists(B.pub));
   BOOST_TEST(app.balance(A.pub) == funded);
@@ -282,19 +284,19 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(MorpheEntries)
 
-static uint64_t fund(morphe::App& app, const KeyPair& A, uint64_t height, unsigned diff = 8) {
+static uint64_t fund(services::App& app, const KeyPair& A, uint64_t height, unsigned diff = 8) {
   Sha256PowVerifier v;
-  app.submit_mint(morphe::make_mint(v, app.mint_key(), A, diff));
+  app.submit_mint(services::make_mint(v, app.mint_key(), A, diff));
   apply_block(app, height);
   return app.balance(A.pub);
 }
 
 BOOST_AUTO_TEST_CASE(EntryCreateHoldsOwnerBalancePayload) {
-  morphe::App app;
+  services::App app;
   KeyPair A = KeyPair::generate();
   const uint64_t funded = fund(app, A, 1);
 
-  app.submit_entry(morphe::make_entry_put(A, sv("foo"), /*seq=*/0, /*fund=*/50, sv("hello")));
+  app.submit_entry(services::make_entry_put(A, sv("foo"), /*seq=*/0, /*fund=*/50, sv("hello")));
   apply_block(app, 2);
 
   BOOST_TEST(app.entry_exists(sv("foo")));
@@ -307,22 +309,22 @@ BOOST_AUTO_TEST_CASE(EntryCreateHoldsOwnerBalancePayload) {
 }
 
 BOOST_AUTO_TEST_CASE(EntryUpdateOnlyByOwner) {
-  morphe::App app;
+  services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
   fund(app, A, 1);
   fund(app, B, 2);
-  app.submit_entry(morphe::make_entry_put(A, sv("foo"), 0, 10, sv("v1")));
+  app.submit_entry(services::make_entry_put(A, sv("foo"), 0, 10, sv("v1")));
   apply_block(app, 3);
 
-  app.submit_entry(morphe::make_entry_put(B, sv("foo"), 0, 5, sv("evil")));
+  app.submit_entry(services::make_entry_put(B, sv("foo"), 0, 5, sv("evil")));
   apply_block(app, 4);
   const wire::Bytes pl1 = app.entry_payload(sv("foo"));
   BOOST_TEST(std::string(pl1.begin(), pl1.end()) == "v1");
   BOOST_TEST((app.entry_owner(sv("foo")) == A.pub));
   BOOST_TEST(app.sequence(B.pub) == 0u);
 
-  app.submit_entry(morphe::make_entry_put(A, sv("foo"), 1, 7, sv("v2")));
+  app.submit_entry(services::make_entry_put(A, sv("foo"), 1, 7, sv("v2")));
   apply_block(app, 5);
   const wire::Bytes pl2 = app.entry_payload(sv("foo"));
   BOOST_TEST(std::string(pl2.begin(), pl2.end()) == "v2");
@@ -330,64 +332,64 @@ BOOST_AUTO_TEST_CASE(EntryUpdateOnlyByOwner) {
 }
 
 BOOST_AUTO_TEST_CASE(EntryDelRefundsOwner) {
-  morphe::App app;
+  services::App app;
   KeyPair A = KeyPair::generate();
   fund(app, A, 1);
-  app.submit_entry(morphe::make_entry_put(A, sv("foo"), 0, 40, sv("x")));
+  app.submit_entry(services::make_entry_put(A, sv("foo"), 0, 40, sv("x")));
   apply_block(app, 2);
   const uint64_t before = app.balance(A.pub);
 
-  app.submit_entry(morphe::make_entry_del(A, sv("foo"), 1));
+  app.submit_entry(services::make_entry_del(A, sv("foo"), 1));
   apply_block(app, 3);
   BOOST_TEST(!app.entry_exists(sv("foo")));
   BOOST_TEST(app.balance(A.pub) == before + 40u - app.config().fee_entry);
 }
 
 BOOST_AUTO_TEST_CASE(EntryGiveTransfersOwnership) {
-  morphe::App app;
+  services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
   fund(app, A, 1);
   fund(app, B, 2);
-  app.submit_entry(morphe::make_entry_put(A, sv("foo"), 0, 5, sv("x")));
+  app.submit_entry(services::make_entry_put(A, sv("foo"), 0, 5, sv("x")));
   apply_block(app, 3);
-  app.submit_entry(morphe::make_entry_give(A, sv("foo"), 1, B.pub));
+  app.submit_entry(services::make_entry_give(A, sv("foo"), 1, B.pub));
   apply_block(app, 4);
   BOOST_TEST((app.entry_owner(sv("foo")) == B.pub));
 
-  app.submit_entry(morphe::make_entry_put(B, sv("foo"), 0, 0, sv("bee")));
+  app.submit_entry(services::make_entry_put(B, sv("foo"), 0, 0, sv("bee")));
   apply_block(app, 5);
   const wire::Bytes pl = app.entry_payload(sv("foo"));
   BOOST_TEST(std::string(pl.begin(), pl.end()) == "bee");
 }
 
 BOOST_AUTO_TEST_CASE(RentStarvesEntryThenRipPaysCuller) {
-  morphe::Config cfg;
+  services::Config cfg;
   cfg.rent_rate = 1;
-  morphe::App app(cfg);
+  services::App app(cfg);
   uint64_t clock = 100;
   app.set_now_fn([&] { return clock; });
   KeyPair A = KeyPair::generate();
   KeyPair C = KeyPair::generate();
   fund(app, A, 1);
-  app.submit_entry(morphe::make_entry_put(A, sv("foo"), 0, /*fund=*/5, sv("abc")));
+  app.submit_entry(services::make_entry_put(A, sv("foo"), 0, /*fund=*/5, sv("abc")));
   apply_block(app, 2);
 
   clock = 100000;
-  app.submit_entry(morphe::make_entry_rip(sv("foo"), C.pub));
+  app.submit_entry(services::make_entry_rip(sv("foo"), C.pub));
   apply_block(app, 3);
   BOOST_TEST(!app.entry_exists(sv("foo")));
   BOOST_TEST(app.balance(C.pub) == app.config().rip_bounty);
 }
 
 BOOST_AUTO_TEST_CASE(FreshEntryNotRippable) {
-  morphe::App app;
+  services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair C = KeyPair::generate();
   fund(app, A, 1);
-  app.submit_entry(morphe::make_entry_put(A, sv("foo"), 0, 0, sv("")));
+  app.submit_entry(services::make_entry_put(A, sv("foo"), 0, 0, sv("")));
   apply_block(app, 2);
-  app.submit_entry(morphe::make_entry_rip(sv("foo"), C.pub));
+  app.submit_entry(services::make_entry_rip(sv("foo"), C.pub));
   apply_block(app, 3);
   BOOST_TEST(app.entry_exists(sv("foo")));
   BOOST_TEST(!app.account_exists(C.pub));
@@ -400,31 +402,31 @@ BOOST_AUTO_TEST_SUITE(MorpheGenesis)
 BOOST_AUTO_TEST_CASE(HashDeterministicOrderIndependentAndTextRoundTrips) {
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
-  morphe::Genesis g1;
+  services::Genesis g1;
   g1.chain_id = "testchain";
   g1.validators = {A.pub, B.pub};
   g1.allocations = {{A.pub, 100}, {B.pub, 50}};
-  morphe::Genesis g2;
+  services::Genesis g2;
   g2.chain_id = "testchain";
   g2.validators = {B.pub, A.pub};
   g2.allocations = {{B.pub, 50}, {A.pub, 100}};
   BOOST_TEST((g1.hash() == g2.hash()));
 
-  morphe::Genesis g3 = morphe::Genesis::parse(g1.to_text());
+  services::Genesis g3 = services::Genesis::parse(g1.to_text());
   BOOST_TEST((g3.hash() == g1.hash()));
 }
 
 BOOST_AUTO_TEST_CASE(ConfigWindowIsInsideTheHashAndRoundTrips) {
   KeyPair A = KeyPair::generate();
   auto mk = [&](uint64_t window) {
-    morphe::Genesis g;
+    services::Genesis g;
     g.chain_id = "wc";
     g.validators = {A.pub};
     g.config.pbts_window_secs = window;
     return g;
   };
   BOOST_TEST((mk(3600).hash() != mk(1800).hash()));
-  morphe::Genesis rt = morphe::Genesis::parse(mk(1234).to_text());
+  services::Genesis rt = services::Genesis::parse(mk(1234).to_text());
   BOOST_TEST(rt.config.pbts_window_secs == 1234u);
   BOOST_TEST((rt.hash() == mk(1234).hash()));
 }
@@ -432,7 +434,7 @@ BOOST_AUTO_TEST_CASE(ConfigWindowIsInsideTheHashAndRoundTrips) {
 BOOST_AUTO_TEST_CASE(ValidateCatchesBadGenesis) {
   KeyPair A = KeyPair::generate();
   std::string err;
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "c";
   g.validators = {A.pub};
   BOOST_TEST(g.validate(err));
@@ -475,11 +477,11 @@ BOOST_AUTO_TEST_CASE(ValidateCatchesBadGenesis) {
 BOOST_AUTO_TEST_CASE(AppFromGenesisSeedsAllocations) {
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "c";
   g.validators = {A.pub};
   g.allocations = {{A.pub, 1000}, {B.pub, 500}};
-  morphe::App app = morphe::App::from_genesis(g);
+  services::App app = services::App::from_genesis(g);
   BOOST_TEST(app.balance(A.pub) == 1000u);
   BOOST_TEST(app.balance(B.pub) == 500u);
   BOOST_TEST(app.account_exists(A.pub));
@@ -492,43 +494,43 @@ BOOST_AUTO_TEST_SUITE(MorpheKeys)
 BOOST_AUTO_TEST_CASE(KeyFileRoundTrips) {
   const std::string path = "/tmp/morphe_keytest.key";
   KeyPair kp = KeyPair::generate();
-  morphe::save_key(path, kp);
-  KeyPair loaded = morphe::load_key(path);
+  services::save_key(path, kp);
+  KeyPair loaded = services::load_key(path);
   BOOST_TEST((loaded.pub == kp.pub));
   BOOST_TEST((loaded.priv == kp.priv));
-  BOOST_TEST(morphe::pubkey_hex(kp.pub).size() == 64u);
+  BOOST_TEST(services::pubkey_hex(kp.pub).size() == 64u);
   std::remove(path.c_str());
 }
 
 BOOST_AUTO_TEST_CASE(LoadRejectsMissingFile) {
-  BOOST_CHECK_THROW(morphe::load_key("/tmp/morphe_nonexistent_key_zzz"), std::runtime_error);
+  BOOST_CHECK_THROW(services::load_key("/tmp/morphe_nonexistent_key_zzz"), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(KeyringNamesAndPaths) {
-  BOOST_TEST(morphe::valid_key_name("alice"));
-  BOOST_TEST(morphe::valid_key_name("node-0_v.2"));
-  BOOST_TEST(!morphe::valid_key_name(""));
-  BOOST_TEST(!morphe::valid_key_name("."));
-  BOOST_TEST(!morphe::valid_key_name(".."));
-  BOOST_TEST(!morphe::valid_key_name("a/b"));
-  BOOST_TEST(!morphe::valid_key_name("a b"));
-  BOOST_CHECK_THROW(morphe::key_path("bad/name"), std::runtime_error);
+  BOOST_TEST(services::valid_key_name("alice"));
+  BOOST_TEST(services::valid_key_name("node-0_v.2"));
+  BOOST_TEST(!services::valid_key_name(""));
+  BOOST_TEST(!services::valid_key_name("."));
+  BOOST_TEST(!services::valid_key_name(".."));
+  BOOST_TEST(!services::valid_key_name("a/b"));
+  BOOST_TEST(!services::valid_key_name("a b"));
+  BOOST_CHECK_THROW(services::key_path("bad/name"), std::runtime_error);
 
-  morphe::set_keyring_dir("/tmp/morphe_keyring_test");
+  services::set_keyring_dir("/tmp/morphe_keyring_test");
   std::filesystem::remove_all("/tmp/morphe_keyring_test");
-  const std::string p = morphe::key_path("alice");
+  const std::string p = services::key_path("alice");
   BOOST_TEST(p == "/tmp/morphe_keyring_test/alice.key");
   std::filesystem::create_directories("/tmp/morphe_keyring_test");
   KeyPair kp = KeyPair::generate();
-  morphe::save_key(p, kp);
-  morphe::save_key(morphe::key_path("bob"), KeyPair::generate());
-  BOOST_TEST((morphe::load_key(p).pub == kp.pub));
-  const std::vector<std::string> names = morphe::list_key_names();
+  services::save_key(p, kp);
+  services::save_key(services::key_path("bob"), KeyPair::generate());
+  BOOST_TEST((services::load_key(p).pub == kp.pub));
+  const std::vector<std::string> names = services::list_key_names();
   BOOST_TEST(names.size() == 2u);
   BOOST_TEST(names[0] == "alice");
   BOOST_TEST(names[1] == "bob");
   std::filesystem::remove_all("/tmp/morphe_keyring_test");
-  morphe::set_keyring_dir("");
+  services::set_keyring_dir("");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -539,37 +541,37 @@ BOOST_AUTO_TEST_CASE(SingleValidatorAdvancesAndCommitsOps) {
   PrivKey secret{};
   secret[0] = 7;
   KeyPair v = KeyPair::from_secret(secret);
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "rt";
   g.validators = {v.pub};
-  morphe::Runtime rt(g, v, /*block_pace_ms=*/0);
+  services::Runtime rt(g, v, /*block_pace_ms=*/0);
 
   rt.run_to(3);
   BOOST_TEST(rt.height() >= 3u);
 
   KeyPair A = KeyPair::generate();
   Sha256PowVerifier pv;
-  rt.app().submit_mint(morphe::make_mint(pv, rt.app().mint_key(), A, 4, 0, sv(g.chain_id)));
+  rt.app().submit_mint(services::make_mint(pv, rt.app().mint_key(), A, 4, 0, sv(g.chain_id)));
   rt.run_to(rt.height() + 3);
   BOOST_TEST(rt.app().balance(A.pub) > 0u);
 }
 
 BOOST_AUTO_TEST_CASE(OutOfWindowTimestampRejected) {
-  morphe::App app;
+  services::App app;
   uint64_t clock = 1'000'000;
   app.set_now_fn([&] { return clock; });
 
-  morphe::Decoded d;
+  services::Decoded d;
   d.timestamp = clock;
-  const wire::Bytes ok = morphe::encode_ops(d);
+  const wire::Bytes ok = services::encode_ops(d);
   BOOST_TEST(app.validate_payload(wire::View(ok.data(), ok.size())));
 
   d.timestamp = clock + app.config().pbts_window_secs + 100;
-  const wire::Bytes future = morphe::encode_ops(d);
+  const wire::Bytes future = services::encode_ops(d);
   BOOST_TEST(!app.validate_payload(wire::View(future.data(), future.size())));
 
   d.timestamp = clock - app.config().pbts_window_secs - 100;
-  const wire::Bytes past = morphe::encode_ops(d);
+  const wire::Bytes past = services::encode_ops(d);
   BOOST_TEST(!app.validate_payload(wire::View(past.data(), past.size())));
 }
 
@@ -585,8 +587,8 @@ BOOST_AUTO_TEST_CASE(FrameRoundTrips) {
 
   morphe::FrameHeader h;
   h.chain_tag = morphe::chain_tag_of(sv("mychain"));
-  h.type = morphe::MsgType::Consensus;
-  h.channel = static_cast<uint8_t>(morphe::Channel::Consensus);
+  h.type = services::MsgType::Consensus;
+  h.channel = static_cast<uint8_t>(services::Channel::Consensus);
   h.hop_count = 1;
   h.flags = morphe::FLAG_FORWARD;
   h.dest = dst.pub;
@@ -600,7 +602,7 @@ BOOST_AUTO_TEST_CASE(FrameRoundTrips) {
   wire::View got_payload = morphe::decode_frame(wire::View(framed.data(), framed.size()), got);
   BOOST_TEST(got.version == morphe::PROTOCOL_VERSION);
   BOOST_TEST(got.chain_tag == h.chain_tag);
-  BOOST_TEST((got.type == morphe::MsgType::Consensus));
+  BOOST_TEST((got.type == services::MsgType::Consensus));
   BOOST_TEST(got.hop_count == 1);
   BOOST_TEST(got.flags == morphe::FLAG_FORWARD);
   BOOST_TEST((got.dest == dst.pub));
@@ -611,7 +613,7 @@ BOOST_AUTO_TEST_CASE(FrameRoundTrips) {
 
 BOOST_AUTO_TEST_CASE(FrameRejectsMalformed) {
   morphe::FrameHeader h;
-  h.type = morphe::MsgType::Ping;
+  h.type = services::MsgType::Ping;
   const wire::Bytes good = morphe::encode_frame(h, wire::View{});
   morphe::FrameHeader got;
 
@@ -657,8 +659,8 @@ struct MeshFixture {
 
 BOOST_FIXTURE_TEST_CASE(RoutesDirectDelivers, MeshFixture) {
   bool got = false;
-  pb.on_recv = [&](const PubKey&, morphe::MsgType, wire::View) { got = true; };
-  mesh.route(A.pub, B.pub, morphe::MsgType::Consensus, sv("hi"));
+  pb.on_recv = [&](const PubKey&, services::MsgType, wire::View) { got = true; };
+  mesh.route(A.pub, B.pub, services::MsgType::Consensus, sv("hi"));
   BOOST_TEST(got);
   BOOST_TEST(mesh.delivered == 1u);
   BOOST_TEST(mesh.relay_count == 0u);
@@ -667,8 +669,8 @@ BOOST_FIXTURE_TEST_CASE(RoutesDirectDelivers, MeshFixture) {
 BOOST_FIXTURE_TEST_CASE(ForwardingRequiredUsesRelay, MeshFixture) {
   mesh.down(A.pub, C.pub);
   bool got = false;
-  pc.on_recv = [&](const PubKey&, morphe::MsgType, wire::View) { got = true; };
-  mesh.route(A.pub, C.pub, morphe::MsgType::Consensus, sv("relayme"));
+  pc.on_recv = [&](const PubKey&, services::MsgType, wire::View) { got = true; };
+  mesh.route(A.pub, C.pub, services::MsgType::Consensus, sv("relayme"));
   BOOST_TEST(got);
   BOOST_TEST(mesh.relay_count > 0u);
 }
@@ -677,30 +679,30 @@ BOOST_FIXTURE_TEST_CASE(StrandedNodeUnreachable, MeshFixture) {
   mesh.down(A.pub, C.pub);
   mesh.down(B.pub, C.pub);
   bool got = false;
-  pc.on_recv = [&](const PubKey&, morphe::MsgType, wire::View) { got = true; };
-  mesh.route(A.pub, C.pub, morphe::MsgType::Consensus, sv("lost"));
+  pc.on_recv = [&](const PubKey&, services::MsgType, wire::View) { got = true; };
+  mesh.route(A.pub, C.pub, services::MsgType::Consensus, sv("lost"));
   BOOST_TEST(!got);
   BOOST_TEST(mesh.dropped_no_relay > 0u);
 }
 
 BOOST_FIXTURE_TEST_CASE(SeenCacheDedupsRedundantDelivery, MeshFixture) {
   int count = 0;
-  pb.on_recv = [&](const PubKey&, morphe::MsgType, wire::View) { ++count; };
-  mesh.route(A.pub, B.pub, morphe::MsgType::Tx, sv("dup"));
-  mesh.route(A.pub, B.pub, morphe::MsgType::Tx, sv("dup"));
+  pb.on_recv = [&](const PubKey&, services::MsgType, wire::View) { ++count; };
+  mesh.route(A.pub, B.pub, services::MsgType::Tx, sv("dup"));
+  mesh.route(A.pub, B.pub, services::MsgType::Tx, sv("dup"));
   BOOST_TEST(count == 1);
   BOOST_TEST(mesh.seen_drop > 0u);
 }
 
 BOOST_FIXTURE_TEST_CASE(PeerMapChurnRecovers, MeshFixture) {
   mesh.down(A.pub, C.pub);
-  pc.on_recv = [&](const PubKey&, morphe::MsgType, wire::View) {};
-  mesh.route(A.pub, C.pub, morphe::MsgType::Consensus, sv("m1"));
+  pc.on_recv = [&](const PubKey&, services::MsgType, wire::View) {};
+  mesh.route(A.pub, C.pub, services::MsgType::Consensus, sv("m1"));
   BOOST_TEST(mesh.relay_count > 0u);
   const uint64_t relays_before = mesh.relay_count;
 
   mesh.up(A.pub, C.pub);
-  mesh.route(A.pub, C.pub, morphe::MsgType::Consensus, sv("m2"));
+  mesh.route(A.pub, C.pub, services::MsgType::Consensus, sv("m2"));
   BOOST_TEST(mesh.relay_count == relays_before);
 }
 
@@ -708,7 +710,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(MorpheMeshConsensus)
 
-static morphe::Genesis mesh_g(int n) { return morphe::mesh_genesis(morphe::mesh_keys(n)); }
+static services::Genesis mesh_g(int n) { return morphe::mesh_genesis(morphe::mesh_keys(n)); }
 
 BOOST_AUTO_TEST_CASE(ConvergesFullMesh) {
   morphe::MorpheMeshCluster c(4, mesh_g(4));
@@ -763,7 +765,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(MorpheMeshFaults)
 
-static morphe::Genesis mesh_g(int n) { return morphe::mesh_genesis(morphe::mesh_keys(n)); }
+static services::Genesis mesh_g(int n) { return morphe::mesh_genesis(morphe::mesh_keys(n)); }
 
 BOOST_AUTO_TEST_CASE(CrashedMinorityQuorumKeepsCommitting) {
   morphe::MorpheMeshCluster c(4, mesh_g(4));
@@ -816,53 +818,53 @@ BOOST_AUTO_TEST_SUITE(MorpheMempool)
 
 static wire::Bytes acct_key(const PubKey& pk) {
   wire::Bytes b;
-  b.push_back(morphe::ACCOUNT_PREFIX);
+  b.push_back(services::ACCOUNT_PREFIX);
   b.insert(b.end(), pk.begin(), pk.end());
   return b;
 }
 
 BOOST_AUTO_TEST_CASE(AdmitsValidTransfer) {
-  morphe::Mempool mp{morphe::Config{}};
+  services::Mempool mp{services::Config{}};
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
   wire::Bytes to = acct_key(b.pub);
-  morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 10, /*seq=*/0);
-  BOOST_TEST((mp.admit_transfer(op, /*committed_seq=*/0, /*balance=*/100) == morphe::Admit::Ok));
+  services::TransferOp op = services::make_transfer(a, kv_view(to), 10, /*seq=*/0);
+  BOOST_TEST((mp.admit_transfer(op, /*committed_seq=*/0, /*balance=*/100) == services::Admit::Ok));
   BOOST_TEST(mp.size() == 1u);
 }
 
 BOOST_AUTO_TEST_CASE(RejectsBadShapeSigSeqFunds) {
-  morphe::Config cfg;
+  services::Config cfg;
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
   wire::Bytes to = acct_key(b.pub);
 
   {
-    morphe::Mempool mp{cfg};
-    morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 10, 0);
+    services::Mempool mp{cfg};
+    services::TransferOp op = services::make_transfer(a, kv_view(to), 10, 0);
     op.to.pop_back();
-    BOOST_TEST((mp.admit_transfer(op, 0, 100) == morphe::Admit::BadShape));
+    BOOST_TEST((mp.admit_transfer(op, 0, 100) == services::Admit::BadShape));
   }
   {
-    morphe::Mempool mp{cfg};
-    morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 10, 0);
+    services::Mempool mp{cfg};
+    services::TransferOp op = services::make_transfer(a, kv_view(to), 10, 0);
     op.sig[0] ^= 0xFF;
-    BOOST_TEST((mp.admit_transfer(op, 0, 100) == morphe::Admit::BadSig));
+    BOOST_TEST((mp.admit_transfer(op, 0, 100) == services::Admit::BadSig));
   }
   {
-    morphe::Mempool mp{cfg};
-    morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 10, /*seq=*/5);
-    BOOST_TEST((mp.admit_transfer(op, /*committed_seq=*/0, 100) == morphe::Admit::SeqGap));
+    services::Mempool mp{cfg};
+    services::TransferOp op = services::make_transfer(a, kv_view(to), 10, /*seq=*/5);
+    BOOST_TEST((mp.admit_transfer(op, /*committed_seq=*/0, 100) == services::Admit::SeqGap));
   }
   {
-    morphe::Mempool mp{cfg};
-    morphe::TransferOp ok = morphe::make_transfer(a, kv_view(to), 10, 0);
-    BOOST_TEST((mp.admit_transfer(ok, 0, 100) == morphe::Admit::Ok));
-    morphe::TransferOp stale = morphe::make_transfer(a, kv_view(to), 20, /*seq=*/0);
-    BOOST_TEST((mp.admit_transfer(stale, 0, 100) == morphe::Admit::SeqStale));
+    services::Mempool mp{cfg};
+    services::TransferOp ok = services::make_transfer(a, kv_view(to), 10, 0);
+    BOOST_TEST((mp.admit_transfer(ok, 0, 100) == services::Admit::Ok));
+    services::TransferOp stale = services::make_transfer(a, kv_view(to), 20, /*seq=*/0);
+    BOOST_TEST((mp.admit_transfer(stale, 0, 100) == services::Admit::SeqStale));
   }
   {
-    morphe::Mempool mp{cfg};
-    morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 10, 0);
-    BOOST_TEST((mp.admit_transfer(op, 0, /*balance=*/5) == morphe::Admit::InsufficientFunds));
+    services::Mempool mp{cfg};
+    services::TransferOp op = services::make_transfer(a, kv_view(to), 10, 0);
+    BOOST_TEST((mp.admit_transfer(op, 0, /*balance=*/5) == services::Admit::InsufficientFunds));
   }
 }
 
@@ -870,32 +872,32 @@ BOOST_AUTO_TEST_CASE(DedupAndCapacity) {
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
   wire::Bytes to = acct_key(b.pub);
   {
-    morphe::Mempool mp{morphe::Config{}};
-    morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 10, 0);
-    BOOST_TEST((mp.admit_transfer(op, 0, 100) == morphe::Admit::Ok));
-    BOOST_TEST((mp.admit_transfer(op, 0, 100) == morphe::Admit::Duplicate));
+    services::Mempool mp{services::Config{}};
+    services::TransferOp op = services::make_transfer(a, kv_view(to), 10, 0);
+    BOOST_TEST((mp.admit_transfer(op, 0, 100) == services::Admit::Ok));
+    BOOST_TEST((mp.admit_transfer(op, 0, 100) == services::Admit::Duplicate));
   }
   {
-    morphe::Mempool mp{morphe::Config{}, /*capacity=*/1};
-    morphe::TransferOp op0 = morphe::make_transfer(a, kv_view(to), 10, 0);
-    morphe::TransferOp op1 = morphe::make_transfer(a, kv_view(to), 10, 1);
-    BOOST_TEST((mp.admit_transfer(op0, 0, 100) == morphe::Admit::Ok));
-    BOOST_TEST((mp.admit_transfer(op1, 0, 100) == morphe::Admit::Full));
+    services::Mempool mp{services::Config{}, /*capacity=*/1};
+    services::TransferOp op0 = services::make_transfer(a, kv_view(to), 10, 0);
+    services::TransferOp op1 = services::make_transfer(a, kv_view(to), 10, 1);
+    BOOST_TEST((mp.admit_transfer(op0, 0, 100) == services::Admit::Ok));
+    BOOST_TEST((mp.admit_transfer(op1, 0, 100) == services::Admit::Full));
   }
 }
 
 BOOST_AUTO_TEST_CASE(ChainedNoncesAndDrainOrder) {
-  morphe::Mempool mp{morphe::Config{}};
+  services::Mempool mp{services::Config{}};
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
   wire::Bytes to = acct_key(b.pub);
-  morphe::TransferOp t0 = morphe::make_transfer(a, kv_view(to), 10, 0);
-  morphe::TransferOp t1 = morphe::make_transfer(a, kv_view(to), 10, 1);
-  BOOST_TEST((mp.admit_transfer(t0, 0, 100) == morphe::Admit::Ok));
-  BOOST_TEST((mp.admit_transfer(t1, 0, 100) == morphe::Admit::Ok));
-  morphe::TransferOp t2 = morphe::make_transfer(a, kv_view(to), 100, 2);
-  BOOST_TEST((mp.admit_transfer(t2, 0, 100) == morphe::Admit::InsufficientFunds));
+  services::TransferOp t0 = services::make_transfer(a, kv_view(to), 10, 0);
+  services::TransferOp t1 = services::make_transfer(a, kv_view(to), 10, 1);
+  BOOST_TEST((mp.admit_transfer(t0, 0, 100) == services::Admit::Ok));
+  BOOST_TEST((mp.admit_transfer(t1, 0, 100) == services::Admit::Ok));
+  services::TransferOp t2 = services::make_transfer(a, kv_view(to), 100, 2);
+  BOOST_TEST((mp.admit_transfer(t2, 0, 100) == services::Admit::InsufficientFunds));
 
-  morphe::Decoded d = mp.drain(10);
+  services::Decoded d = mp.drain(10);
   BOOST_TEST(d.transfers.size() == 2u);
   BOOST_TEST(d.transfers[0].seq == 0u);
   BOOST_TEST(d.transfers[1].seq == 1u);
@@ -903,31 +905,31 @@ BOOST_AUTO_TEST_CASE(ChainedNoncesAndDrainOrder) {
 }
 
 BOOST_AUTO_TEST_CASE(MintAdmissionFloorAndDedup) {
-  morphe::Config cfg;
-  morphe::Mempool mp{cfg};
+  services::Config cfg;
+  services::Mempool mp{cfg};
   Sha256PowVerifier v;
   Hash key{};
   KeyPair ben = KeyPair::generate();
-  morphe::MintOp good = morphe::make_mint(v, key, ben, /*min_diff=*/1);
-  BOOST_TEST((mp.admit_mint(good) == morphe::Admit::Ok));
-  BOOST_TEST((mp.admit_mint(good) == morphe::Admit::Duplicate));
+  services::MintOp good = services::make_mint(v, key, ben, /*min_diff=*/1);
+  BOOST_TEST((mp.admit_mint(good) == services::Admit::Ok));
+  BOOST_TEST((mp.admit_mint(good) == services::Admit::Duplicate));
 
-  morphe::MintOp junk = good;
+  services::MintOp junk = good;
   junk.solution.fill(0xFF);
-  BOOST_TEST((mp.admit_mint(junk) == morphe::Admit::BelowFloor));
+  BOOST_TEST((mp.admit_mint(junk) == services::Admit::BelowFloor));
 }
 
 BOOST_AUTO_TEST_CASE(AdmittedTransferCommitsAndMovesBalance) {
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "mp";
   g.validators = {a.pub};
   g.allocations = {{a.pub, 1000}};
-  morphe::App app = morphe::App::from_genesis(g);
+  services::App app = services::App::from_genesis(g);
 
   wire::Bytes to = acct_key(b.pub);
-  morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 100, /*seq=*/0, sv(g.chain_id));
-  BOOST_TEST((app.admit_transfer(op) == morphe::Admit::Ok));
+  services::TransferOp op = services::make_transfer(a, kv_view(to), 100, /*seq=*/0, sv(g.chain_id));
+  BOOST_TEST((app.admit_transfer(op) == services::Admit::Ok));
   BOOST_TEST(app.mempool().size() == 1u);
 
   apply_block(app, 1);
@@ -940,13 +942,13 @@ BOOST_AUTO_TEST_CASE(AdmittedTransferCommitsAndMovesBalance) {
 
 BOOST_AUTO_TEST_CASE(AdmittedTransferCommitsChainWide) {
   auto kps = morphe::mesh_keys(4);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
+  services::Genesis g = morphe::mesh_genesis(kps);
   g.allocations = {{kps[0].pub, 1000}};
   morphe::MorpheMeshCluster c(4, g);
 
   wire::Bytes to = acct_key(kps[1].pub);
-  morphe::TransferOp op = morphe::make_transfer(kps[0], kv_view(to), 100, /*seq=*/0, sv(g.chain_id));
-  for (int i = 0; i < 4; i++) BOOST_TEST((c.apps[i]->admit_transfer(op) == morphe::Admit::Ok));
+  services::TransferOp op = services::make_transfer(kps[0], kv_view(to), 100, /*seq=*/0, sv(g.chain_id));
+  for (int i = 0; i < 4; i++) BOOST_TEST((c.apps[i]->admit_transfer(op) == services::Admit::Ok));
 
   BOOST_TEST(c.run(/*goal=*/2, /*needed=*/4));
   for (int i = 0; i < 4; i++) {
@@ -962,16 +964,16 @@ BOOST_AUTO_TEST_SUITE(MorpheNetRuntime)
 
 BOOST_AUTO_TEST_CASE(FourRuntimesCommitOverMesh) {
   auto kps = morphe::mesh_keys(4);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
+  services::Genesis g = morphe::mesh_genesis(kps);
   morphe::SimMesh mesh;
   mesh.init(g.validators);
 
   std::vector<std::unique_ptr<morphe::SimMeshPort>> ports;
-  std::vector<std::unique_ptr<morphe::Runtime>> rts;
+  std::vector<std::unique_ptr<services::Runtime>> rts;
   for (int i = 0; i < 4; i++)
     ports.push_back(std::make_unique<morphe::SimMeshPort>(&mesh, kps[i].pub));
   for (int i = 0; i < 4; i++)
-    rts.push_back(std::make_unique<morphe::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
+    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
 
   for (auto& rt : rts) rt->begin();
   const uint64_t GOAL = 3;
@@ -998,27 +1000,27 @@ BOOST_AUTO_TEST_SUITE(MorphePropagation)
 
 static wire::Bytes acct_key_p(const PubKey& pk) {
   wire::Bytes b;
-  b.push_back(morphe::ACCOUNT_PREFIX);
+  b.push_back(services::ACCOUNT_PREFIX);
   b.insert(b.end(), pk.begin(), pk.end());
   return b;
 }
 
 BOOST_AUTO_TEST_CASE(SubmittedTxFloodsAndCommitsChainWide) {
   auto kps = morphe::mesh_keys(4);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
+  services::Genesis g = morphe::mesh_genesis(kps);
   g.allocations = {{kps[0].pub, 1000}};
   morphe::SimMesh mesh;
   mesh.init(g.validators);
   std::vector<std::unique_ptr<morphe::SimMeshPort>> ports;
-  std::vector<std::unique_ptr<morphe::Runtime>> rts;
+  std::vector<std::unique_ptr<services::Runtime>> rts;
   for (int i = 0; i < 4; i++)
     ports.push_back(std::make_unique<morphe::SimMeshPort>(&mesh, kps[i].pub));
   for (int i = 0; i < 4; i++)
-    rts.push_back(std::make_unique<morphe::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
+    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
 
   wire::Bytes to = acct_key_p(kps[1].pub);
-  morphe::TransferOp op = morphe::make_transfer(kps[0], kv_view(to), 100, /*seq=*/0, sv(g.chain_id));
-  BOOST_TEST((rts[0]->submit(op) == morphe::Admit::Ok));
+  services::TransferOp op = services::make_transfer(kps[0], kv_view(to), 100, /*seq=*/0, sv(g.chain_id));
+  BOOST_TEST((rts[0]->submit(op) == services::Admit::Ok));
   for (int i = 0; i < 4; i++)
     BOOST_TEST(rts[i]->app().mempool().size() == 1u);
 
@@ -1039,20 +1041,20 @@ BOOST_AUTO_TEST_CASE(SubmittedTxFloodsAndCommitsChainWide) {
 
 BOOST_AUTO_TEST_CASE(PropagationReachesAllUnderLoss) {
   auto kps = morphe::mesh_keys(5);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
+  services::Genesis g = morphe::mesh_genesis(kps);
   g.allocations = {{kps[0].pub, 1000}};
   morphe::SimMesh mesh;
   mesh.init(g.validators);
   mesh.loss_pct = 40;
   std::vector<std::unique_ptr<morphe::SimMeshPort>> ports;
-  std::vector<std::unique_ptr<morphe::Runtime>> rts;
+  std::vector<std::unique_ptr<services::Runtime>> rts;
   for (int i = 0; i < 5; i++)
     ports.push_back(std::make_unique<morphe::SimMeshPort>(&mesh, kps[i].pub));
   for (int i = 0; i < 5; i++)
-    rts.push_back(std::make_unique<morphe::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
+    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
 
   wire::Bytes to = acct_key_p(kps[1].pub);
-  morphe::TransferOp op = morphe::make_transfer(kps[0], kv_view(to), 100, 0, sv(g.chain_id));
+  services::TransferOp op = services::make_transfer(kps[0], kv_view(to), 100, 0, sv(g.chain_id));
   rts[0]->submit(op);
 
   bool all = false;
@@ -1116,7 +1118,7 @@ BOOST_AUTO_TEST_CASE(FuzzDecodeFrame) {
   auto kps = morphe::mesh_keys(1);
   morphe::FrameHeader h;
   h.chain_tag = 7;
-  h.type = morphe::MsgType::Consensus;
+  h.type = services::MsgType::Consensus;
   h.dest = kps[0].pub;
   h.src = kps[0].pub;
   const wire::Bytes valid = morphe::encode_frame(h, sv("hello"));
@@ -1126,18 +1128,18 @@ BOOST_AUTO_TEST_CASE(FuzzDecodeFrame) {
 BOOST_AUTO_TEST_CASE(FuzzDecodeOps) {
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
   wire::Bytes to = rpc_acct_key(b.pub);
-  morphe::Decoded d;
+  services::Decoded d;
   d.timestamp = 123;
-  d.transfers.push_back(morphe::make_transfer(a, kv_view(to), 5, 0));
-  const wire::Bytes valid = morphe::encode_ops(d);
-  fuzz_bytes(0x2222, valid, [](wire::View v) { morphe::decode_ops(v); });
+  d.transfers.push_back(services::make_transfer(a, kv_view(to), 5, 0));
+  const wire::Bytes valid = services::encode_ops(d);
+  fuzz_bytes(0x2222, valid, [](wire::View v) { services::decode_ops(v); });
 }
 
 BOOST_AUTO_TEST_CASE(FuzzSnapshotRestore) {
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "fz";
   g.validators = {KeyPair::generate().pub};
-  morphe::App app = morphe::App::from_genesis(g);
+  services::App app = services::App::from_genesis(g);
   const wire::Bytes valid = app.snapshot();
   fuzz_bytes(0x3333, valid, [&](wire::View v) { app.restore(v); });
 }
@@ -1150,16 +1152,16 @@ BOOST_AUTO_TEST_CASE(FuzzGenesisParse) {
     std::string s;
     const int words = 1 + r.below(8);
     for (int w = 0; w < words; ++w) { s += toks[r.below(9)]; s += (r.below(2) ? " " : "\n"); }
-    try { morphe::Genesis::parse(s); } catch (const std::exception&) { ++rejected; }
+    try { services::Genesis::parse(s); } catch (const std::exception&) { ++rejected; }
   }
   BOOST_TEST(rejected > 0);
 }
 
 BOOST_AUTO_TEST_CASE(FuzzRpcDispatch) {
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "fz";
   g.validators = {KeyPair::generate().pub};
-  morphe::Runtime rt(g, KeyPair::generate());
+  services::Runtime rt(g, KeyPair::generate());
   morphe::RpcService svc(rt);
   const char* methods[] = {"submit_tx", "query.balance", "query.tx", "admin.leave",
                            "query.entry", "status", "no.such", "query.account"};
@@ -1184,14 +1186,14 @@ BOOST_AUTO_TEST_SUITE(MorpheDeterminism)
 
 BOOST_AUTO_TEST_CASE(SameInputsIdenticalAppHash) {
   auto kps = morphe::mesh_keys(4);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
+  services::Genesis g = morphe::mesh_genesis(kps);
   g.allocations = {{kps[0].pub, 1000}};
 
   auto run_once = [&](uint64_t seed) -> Hash {
     morphe::MorpheMeshCluster c(4, g, seed);
     for (int i = 0; i < 4; i++) c.apps[i]->set_now_fn([] { return uint64_t{1'700'000'000}; });
     wire::Bytes to = rpc_acct_key(kps[1].pub);
-    morphe::TransferOp op = morphe::make_transfer(kps[0], kv_view(to), 100, 0, sv(g.chain_id));
+    services::TransferOp op = services::make_transfer(kps[0], kv_view(to), 100, 0, sv(g.chain_id));
     for (int i = 0; i < 4; i++) c.apps[i]->admit_transfer(op);
     c.run(/*goal=*/3, /*needed=*/4);
     return c.nodes[0]->composite_hash();
@@ -1218,16 +1220,16 @@ BOOST_AUTO_TEST_CASE(MsgIdIncludesDest) {
 
 BOOST_AUTO_TEST_CASE(EmptyNameEntryIsNoOp) {
   KeyPair owner = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "rev";
   g.validators = {owner.pub};
   g.allocations = {{owner.pub, 1000}};
-  morphe::App app = morphe::App::from_genesis(g);
+  services::App app = services::App::from_genesis(g);
 
-  morphe::Decoded d;
+  services::Decoded d;
   d.timestamp = 1;
-  d.entries.push_back(morphe::make_entry_put(owner, wire::View{}, 0, 10, wire::View{}));
-  wire::Bytes p = morphe::encode_ops(d);
+  d.entries.push_back(services::make_entry_put(owner, wire::View{}, 0, 10, wire::View{}));
+  wire::Bytes p = services::encode_ops(d);
   app.apply_payload(ApplyContext{1, PubKey{}}, kv_view(p));
 
   BOOST_TEST(!app.entry_exists(wire::View{}));
@@ -1236,21 +1238,21 @@ BOOST_AUTO_TEST_CASE(EmptyNameEntryIsNoOp) {
 
 static wire::Bytes ekey(const char* name) {
   wire::Bytes b;
-  b.push_back(morphe::ENTRY_PREFIX);
+  b.push_back(services::ENTRY_PREFIX);
   b.insert(b.end(), name, name + std::strlen(name));
   return b;
 }
 
 BOOST_AUTO_TEST_CASE(TransferCreatesFundsAndTopsUpEntry) {
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "te";
   g.validators = {a.pub};
   g.allocations = {{a.pub, 1000}, {b.pub, 500}};
-  morphe::App app = morphe::App::from_genesis(g);
+  services::App app = services::App::from_genesis(g);
 
   wire::Bytes dst = ekey("rec1");
-  BOOST_TEST((app.admit_transfer(morphe::make_transfer(a, kv_view(dst), 100, 0, sv(g.chain_id))) == morphe::Admit::Ok));
+  BOOST_TEST((app.admit_transfer(services::make_transfer(a, kv_view(dst), 100, 0, sv(g.chain_id))) == services::Admit::Ok));
   apply_block(app, 1);
   wire::View name(reinterpret_cast<const uint8_t*>("rec1"), 4);
   BOOST_TEST(app.entry_exists(name));
@@ -1258,7 +1260,7 @@ BOOST_AUTO_TEST_CASE(TransferCreatesFundsAndTopsUpEntry) {
   BOOST_TEST(app.entry_balance(name) == 100u);
   BOOST_TEST(app.balance(a.pub) == 1000u - 100u - 1u);
 
-  BOOST_TEST((app.admit_transfer(morphe::make_transfer(b, kv_view(dst), 50, 0, sv(g.chain_id))) == morphe::Admit::Ok));
+  BOOST_TEST((app.admit_transfer(services::make_transfer(b, kv_view(dst), 50, 0, sv(g.chain_id))) == services::Admit::Ok));
   apply_block(app, 2);
   BOOST_TEST(app.entry_balance(name) == 150u);
   BOOST_TEST((app.entry_owner(name) == a.pub));
@@ -1268,17 +1270,17 @@ BOOST_AUTO_TEST_CASE(TransferCreatesFundsAndTopsUpEntry) {
 BOOST_AUTO_TEST_CASE(TransferToEmptyEntryKeyRejected) {
   KeyPair a = KeyPair::generate();
   wire::Bytes bare;
-  bare.push_back(morphe::ENTRY_PREFIX);
-  morphe::TransferOp op = morphe::make_transfer(a, kv_view(bare), 10, 0);
-  morphe::Mempool mp{morphe::Config{}};
-  BOOST_TEST((mp.admit_transfer(op, 0, 1000) == morphe::Admit::BadShape));
+  bare.push_back(services::ENTRY_PREFIX);
+  services::TransferOp op = services::make_transfer(a, kv_view(bare), 10, 0);
+  services::Mempool mp{services::Config{}};
+  BOOST_TEST((mp.admit_transfer(op, 0, 1000) == services::Admit::BadShape));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(MorpheLifecycle)
 
-static morphe::Genesis life_g(int n) { return morphe::mesh_genesis(morphe::mesh_keys(n)); }
+static services::Genesis life_g(int n) { return morphe::mesh_genesis(morphe::mesh_keys(n)); }
 
 // Encode a signed Prop: [u64 h][u64 round][proposer:32][bytes value][sig:64]. claimed is the
 // proposer field; signer is who actually signs.
@@ -1312,8 +1314,8 @@ static wire::Bytes make_prop(uint64_t h, int64_t round, const KeyPair& proposer,
 BOOST_AUTO_TEST_CASE(DoubleSignEvidenceWritten) {
   namespace fs = std::filesystem;
   auto kps = morphe::mesh_keys(2);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
-  morphe::Runtime rt(g, kps[0]);
+  services::Genesis g = morphe::mesh_genesis(kps);
+  services::Runtime rt(g, kps[0]);
   const std::string dir = (fs::temp_directory_path() / ("morphe-ev-" + std::to_string(::getpid()))).string();
   fs::create_directories(dir);
   rt.set_evidence_dir(dir);
@@ -1322,34 +1324,34 @@ BOOST_AUTO_TEST_CASE(DoubleSignEvidenceWritten) {
   KeyPair byz = kps[1];
   wire::Bytes p1 = make_prop(1, 0, byz, "value-AAAA");
   wire::Bytes p2 = make_prop(1, 0, byz, "value-BBBB");
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(p1.data(), p1.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(p1.data(), p1.size()));
   BOOST_TEST(rt.evidence_count() == 0u);
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(p2.data(), p2.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(p2.data(), p2.size()));
   BOOST_TEST(rt.evidence_count() == 1u);
 
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(p1.data(), p1.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(p1.data(), p1.size()));
   BOOST_TEST(rt.evidence_count() == 1u);
 
   KeyPair attacker = KeyPair::generate();
   wire::Bytes forged = make_prop_as(1, 0, byz.pub, attacker, "value-FORGED");
-  rt.on_message(attacker.pub, morphe::MsgType::Prop, wire::View(forged.data(), forged.size()));
+  rt.on_message(attacker.pub, services::MsgType::Prop, wire::View(forged.data(), forged.size()));
   BOOST_TEST(rt.evidence_count() == 1u);
 
   KeyPair outsider = KeyPair::generate();
   wire::Bytes o1 = make_prop(1, 0, outsider, "out-AAAA");
   wire::Bytes o2 = make_prop(1, 0, outsider, "out-BBBB");
-  rt.on_message(outsider.pub, morphe::MsgType::Prop, wire::View(o1.data(), o1.size()));
-  rt.on_message(outsider.pub, morphe::MsgType::Prop, wire::View(o2.data(), o2.size()));
+  rt.on_message(outsider.pub, services::MsgType::Prop, wire::View(o1.data(), o1.size()));
+  rt.on_message(outsider.pub, services::MsgType::Prop, wire::View(o2.data(), o2.size()));
   BOOST_TEST(rt.evidence_count() == 1u);
 
   wire::Bytes f1 = make_prop(100000, 0, byz, "far-AAAA");
   wire::Bytes f2 = make_prop(100000, 0, byz, "far-BBBB");
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(f1.data(), f1.size()));
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(f2.data(), f2.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(f1.data(), f1.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(f2.data(), f2.size()));
   BOOST_TEST(rt.evidence_count() == 1u);
 
   wire::Bytes truncated(4, 0x00);
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(truncated.data(), truncated.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(truncated.data(), truncated.size()));
 
   bool found = false;
   for (const auto& e : fs::directory_iterator(dir)) {
@@ -1368,8 +1370,8 @@ BOOST_AUTO_TEST_CASE(DoubleSignEvidenceWritten) {
 BOOST_AUTO_TEST_CASE(PropWithTrailingBytesRejected) {
   namespace fs = std::filesystem;
   auto kps = morphe::mesh_keys(2);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
-  morphe::Runtime rt(g, kps[0]);
+  services::Genesis g = morphe::mesh_genesis(kps);
+  services::Runtime rt(g, kps[0]);
   const std::string dir = (fs::temp_directory_path() / ("morphe-f10-" + std::to_string(::getpid()))).string();
   fs::create_directories(dir);
   rt.set_evidence_dir(dir);
@@ -1377,16 +1379,16 @@ BOOST_AUTO_TEST_CASE(PropWithTrailingBytesRejected) {
   KeyPair byz = kps[1];
 
   wire::Bytes p1 = make_prop(1, 0, byz, "value-AAAA");
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(p1.data(), p1.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(p1.data(), p1.size()));
   BOOST_TEST(rt.evidence_count() == 0u);
 
   wire::Bytes p2_bad = make_prop(1, 0, byz, "value-BBBB");
   p2_bad.push_back(0xAB);
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(p2_bad.data(), p2_bad.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(p2_bad.data(), p2_bad.size()));
   BOOST_TEST(rt.evidence_count() == 0u);
 
   wire::Bytes p2 = make_prop(1, 0, byz, "value-BBBB");
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(p2.data(), p2.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(p2.data(), p2.size()));
   BOOST_TEST(rt.evidence_count() == 1u);
   fs::remove_all(dir);
 }
@@ -1396,8 +1398,8 @@ BOOST_AUTO_TEST_CASE(RpcErrorIsStdExceptionAndHandleThrowsOnlyRpcError) {
   catch (const std::exception& e) { BOOST_TEST(std::string(e.what()) == "boom"); }
 
   KeyPair a = KeyPair::generate();
-  morphe::Genesis g; g.chain_id = "rpcerr"; g.validators = {a.pub};
-  morphe::Runtime rt(g, a);
+  services::Genesis g; g.chain_id = "rpcerr"; g.validators = {a.pub};
+  services::Runtime rt(g, a);
   morphe::RpcService svc(rt);
 
   bool threw = false;
@@ -1415,21 +1417,21 @@ BOOST_AUTO_TEST_CASE(CrossChainReplayRejected) {
   namespace fs = std::filesystem;
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
   auto mk = [&](const char* chain) {
-    morphe::Genesis g;
+    services::Genesis g;
     g.chain_id = chain;
     g.validators = {a.pub};
     g.allocations = {{a.pub, 1000}};
-    return morphe::App::from_genesis(g);
+    return services::App::from_genesis(g);
   };
-  morphe::App x = mk("chain-X"), y = mk("chain-Y");
+  services::App x = mk("chain-X"), y = mk("chain-Y");
 
   wire::Bytes to = rpc_acct_key(b.pub);
-  morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 100, 0, sv(std::string("chain-X")));
-  BOOST_TEST((x.admit_transfer(op) == morphe::Admit::Ok));
-  BOOST_TEST((y.admit_transfer(op) == morphe::Admit::BadSig));
+  services::TransferOp op = services::make_transfer(a, kv_view(to), 100, 0, sv(std::string("chain-X")));
+  BOOST_TEST((x.admit_transfer(op) == services::Admit::Ok));
+  BOOST_TEST((y.admit_transfer(op) == services::Admit::BadSig));
 
   auto kps = morphe::mesh_keys(2);
-  morphe::Runtime rt(morphe::mesh_genesis(kps), kps[0]);
+  services::Runtime rt(morphe::mesh_genesis(kps), kps[0]);
   const std::string dir = (fs::temp_directory_path() / ("morphe-b1-" + std::to_string(::getpid()))).string();
   fs::create_directories(dir);
   rt.set_evidence_dir(dir);
@@ -1437,13 +1439,13 @@ BOOST_AUTO_TEST_CASE(CrossChainReplayRejected) {
   KeyPair byz = kps[1];
   wire::Bytes w1 = make_prop_as(1, 0, byz.pub, byz, "v-AAAA", "wrong-chain");
   wire::Bytes w2 = make_prop_as(1, 0, byz.pub, byz, "v-BBBB", "wrong-chain");
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(w1.data(), w1.size()));
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(w2.data(), w2.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(w1.data(), w1.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(w2.data(), w2.size()));
   BOOST_TEST(rt.evidence_count() == 0u);
   wire::Bytes r1 = make_prop_as(1, 0, byz.pub, byz, "v-AAAA");
   wire::Bytes r2 = make_prop_as(1, 0, byz.pub, byz, "v-BBBB");
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(r1.data(), r1.size()));
-  rt.on_message(byz.pub, morphe::MsgType::Prop, wire::View(r2.data(), r2.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(r1.data(), r1.size()));
+  rt.on_message(byz.pub, services::MsgType::Prop, wire::View(r2.data(), r2.size()));
   BOOST_TEST(rt.evidence_count() == 1u);
   fs::remove_all(dir);
 }
@@ -1489,18 +1491,18 @@ BOOST_AUTO_TEST_SUITE(MorpheRpc)
 
 BOOST_AUTO_TEST_CASE(SubmitTxRejectsMultiOpBatch) {
   KeyPair a = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "rpc";
   g.validators = {a.pub};
   g.allocations = {{a.pub, 1000}};
-  morphe::Runtime rt(g, a);
+  services::Runtime rt(g, a);
   morphe::RpcService rpc(rt);
   wire::Bytes to = rpc_acct_key(KeyPair::generate().pub);
-  morphe::TransferOp o1 = morphe::make_transfer(a, kv_view(to), 1, 0, sv(g.chain_id));
-  morphe::TransferOp o2 = morphe::make_transfer(a, kv_view(to), 1, 1, sv(g.chain_id));
-  morphe::Decoded batch;
+  services::TransferOp o1 = services::make_transfer(a, kv_view(to), 1, 0, sv(g.chain_id));
+  services::TransferOp o2 = services::make_transfer(a, kv_view(to), 1, 1, sv(g.chain_id));
+  services::Decoded batch;
   batch.transfers = {o1, o2};
-  const wire::Bytes bb = morphe::encode_ops(batch);
+  const wire::Bytes bb = services::encode_ops(batch);
   BOOST_CHECK_THROW(rpc.handle("submit_tx", json::object{{"tx", to_hex(bb.data(), bb.size())}}),
                     morphe::RpcError);
   json::value ok = rpc.handle("submit_tx", json::object{{"tx", tx_hex(o1)}});
@@ -1509,11 +1511,11 @@ BOOST_AUTO_TEST_CASE(SubmitTxRejectsMultiOpBatch) {
 
 BOOST_AUTO_TEST_CASE(QueriesReflectState) {
   KeyPair a = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "rpc";
   g.validators = {a.pub};
   g.allocations = {{a.pub, 500}};
-  morphe::Runtime rt(g, a);
+  services::Runtime rt(g, a);
   morphe::RpcService rpc(rt);
 
   json::value bal = rpc.handle("query.balance", json::object{{"pubkey", to_hex(a.pub.data(), 32)}});
@@ -1535,10 +1537,10 @@ BOOST_AUTO_TEST_CASE(QueriesReflectState) {
 
 BOOST_AUTO_TEST_CASE(ControlMethodsOpenNoAuth) {
   KeyPair a = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "rpc";
   g.validators = {a.pub};
-  morphe::Runtime rt(g, a);
+  services::Runtime rt(g, a);
   morphe::RpcService rpc(rt);
 
   KeyPair b = KeyPair::generate();
@@ -1552,12 +1554,12 @@ BOOST_AUTO_TEST_CASE(ControlMethodsOpenNoAuth) {
 
 BOOST_AUTO_TEST_CASE(AdminSnapshotRoundTrip) {
   KeyPair a = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "rpc";
   g.validators = {a.pub};
   g.allocations = {{a.pub, 1000}};
 
-  morphe::Runtime rtA(g, a);
+  services::Runtime rtA(g, a);
   morphe::RpcService rpcA(rtA);
   rtA.run_to(1);
   const std::string hA = rpcA.handle("query.apphash", json::object{})
@@ -1565,7 +1567,7 @@ BOOST_AUTO_TEST_CASE(AdminSnapshotRoundTrip) {
   const std::string path = "/tmp/morphe-rpc-snap-" + std::to_string(::getpid()) + ".snap";
   rpcA.handle("admin.snapshot_dump", json::object{{"token", "tok"}, {"path", path}});
 
-  morphe::Runtime rtB(g, a);
+  services::Runtime rtB(g, a);
   morphe::RpcService rpcB(rtB);
   const std::string hB0 = rpcB.handle("query.apphash", json::object{})
                               .as_object().at("apphash").as_string().c_str();
@@ -1581,21 +1583,21 @@ BOOST_AUTO_TEST_CASE(AdminSnapshotRoundTrip) {
 
 BOOST_AUTO_TEST_CASE(SubmitPollBalanceEndToEnd) {
   auto kps = morphe::mesh_keys(4);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
+  services::Genesis g = morphe::mesh_genesis(kps);
   g.allocations = {{kps[0].pub, 1000}};
   morphe::SimMesh mesh;
   mesh.init(g.validators);
   std::vector<std::unique_ptr<morphe::SimMeshPort>> ports;
-  std::vector<std::unique_ptr<morphe::Runtime>> rts;
+  std::vector<std::unique_ptr<services::Runtime>> rts;
   for (int i = 0; i < 4; i++) ports.push_back(std::make_unique<morphe::SimMeshPort>(&mesh, kps[i].pub));
-  for (int i = 0; i < 4; i++) rts.push_back(std::make_unique<morphe::Runtime>(g, kps[i], 0, ports[i].get()));
+  for (int i = 0; i < 4; i++) rts.push_back(std::make_unique<services::Runtime>(g, kps[i], 0, ports[i].get()));
 
   int commit_events = 0;
-  rts[1]->app().add_on_commit([&](const morphe::CommitEvent& e) { if (e.height > 0) ++commit_events; });
+  rts[1]->app().add_on_commit([&](const services::CommitEvent& e) { if (e.height > 0) ++commit_events; });
 
   morphe::RpcService rpc0(*rts[0]);
   wire::Bytes to = rpc_acct_key(kps[1].pub);
-  morphe::TransferOp op = morphe::make_transfer(kps[0], kv_view(to), 100, 0, sv(g.chain_id));
+  services::TransferOp op = services::make_transfer(kps[0], kv_view(to), 100, 0, sv(g.chain_id));
   json::value sub = rpc0.handle("submit_tx", json::object{{"tx", tx_hex(op)}});
   BOOST_TEST(sub.as_object().at("accepted").as_bool());
   const std::string txid = sub.as_object().at("tx_id").as_string().c_str();
@@ -1636,10 +1638,10 @@ using tcp_t = boost::asio::ip::tcp;
 
 struct SoloDrive {
   net_t::io_context& io;
-  morphe::Runtime& rt;
+  services::Runtime& rt;
   net_t::steady_timer timer;
   bool begun = false;
-  SoloDrive(net_t::io_context& io_, morphe::Runtime& rt_) : io(io_), rt(rt_), timer(io_) {}
+  SoloDrive(net_t::io_context& io_, services::Runtime& rt_) : io(io_), rt(rt_), timer(io_) {}
   void tick() {
     if (!begun) { rt.begin(); begun = true; }
     uint64_t h0 = rt.height();
@@ -1705,12 +1707,12 @@ static std::pair<int, std::string> http_post(uint16_t port, const std::string& t
 
 BOOST_AUTO_TEST_CASE(HttpAndWebSocketEndToEnd) {
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "srv";
   g.validators = {a.pub};
   g.allocations = {{a.pub, 1000}};
   net_t::io_context io;
-  morphe::Runtime rt(g, a);
+  services::Runtime rt(g, a);
   morphe::RpcService svc(rt);
   morphe::RpcHttpServer server(io, svc, 0);
   server.start();
@@ -1760,7 +1762,7 @@ BOOST_AUTO_TEST_CASE(HttpAndWebSocketEndToEnd) {
     BOOST_TEST(ju64(bal.as_object().at("result").as_object().at("balance")) == 1000u);
 
     wire::Bytes to = rpc_acct_key(b.pub);
-    morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 100, 0, sv(g.chain_id));
+    services::TransferOp op = services::make_transfer(a, kv_view(to), 100, 0, sv(g.chain_id));
     json::value sub = http_rpc(port, "submit_tx", json::object{{"tx", tx_hex(op)}});
     BOOST_TEST(sub.as_object().at("result").as_object().at("accepted").as_bool());
     const std::string txid = sub.as_object().at("result").as_object().at("tx_id").as_string().c_str();
@@ -1799,11 +1801,11 @@ BOOST_AUTO_TEST_CASE(HttpAndWebSocketEndToEnd) {
 
 BOOST_AUTO_TEST_CASE(PublishSurvivesSlowSubscriber) {
   KeyPair a = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "slowsub";
   g.validators = {a.pub};
   net_t::io_context io;
-  morphe::Runtime rt(g, a);
+  services::Runtime rt(g, a);
   morphe::RpcService svc(rt);
   morphe::RpcHttpServer server(io, svc, 0);
   server.start();
@@ -1856,12 +1858,12 @@ BOOST_AUTO_TEST_CASE(PublishSurvivesSlowSubscriber) {
 
 BOOST_AUTO_TEST_CASE(ClientRestRoundTrip) {
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "crest";
   g.validators = {a.pub};
   g.allocations = {{a.pub, 1000}};
   net_t::io_context io;
-  morphe::Runtime rt(g, a);
+  services::Runtime rt(g, a);
   morphe::RpcService svc(rt);
   morphe::ClientRestServer client(io, svc, 0, "127.0.0.1");
   client.start();
@@ -1886,7 +1888,7 @@ BOOST_AUTO_TEST_CASE(ClientRestRoundTrip) {
     BOOST_TEST(bal.second.find("\"balance\":1000") != std::string::npos);
 
     wire::Bytes to = rpc_acct_key(b.pub);
-    morphe::TransferOp op = morphe::make_transfer(a, kv_view(to), 100, 0, sv(g.chain_id));
+    services::TransferOp op = services::make_transfer(a, kv_view(to), 100, 0, sv(g.chain_id));
     auto sub = http_post(port, "/tx", tx_hex(op));
     BOOST_TEST(sub.first == 200);
     BOOST_TEST(sub.second.find("\"accepted\":true") != std::string::npos);
@@ -1920,11 +1922,11 @@ BOOST_AUTO_TEST_CASE(ClientRestRoundTrip) {
 
 BOOST_AUTO_TEST_CASE(ClientRestDropsSlowLoris) {
   KeyPair a = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "crestidle";
   g.validators = {a.pub};
   net_t::io_context io;
-  morphe::Runtime rt(g, a);
+  services::Runtime rt(g, a);
   morphe::RpcService svc(rt);
   morphe::ClientRestServer client(io, svc, 0, "127.0.0.1", std::chrono::milliseconds(200));
   client.start();
@@ -1950,11 +1952,11 @@ BOOST_AUTO_TEST_CASE(ClientRestDropsSlowLoris) {
 
 BOOST_AUTO_TEST_CASE(AdminShutdownHaltsTheLoop) {
   KeyPair a = KeyPair::generate();
-  morphe::Genesis g;
+  services::Genesis g;
   g.chain_id = "sd";
   g.validators = {a.pub};
   net_t::io_context io;
-  morphe::Runtime rt(g, a);
+  services::Runtime rt(g, a);
   morphe::RpcService svc(rt);
   rt.set_shutdown_hook([&io] { net_t::post(io, [&io] { io.stop(); }); });
 
@@ -1999,8 +2001,8 @@ BOOST_AUTO_TEST_CASE(DirectDeliveryOverTcp) {
   bool got = false;
   PubKey gsrc{};
   std::string gpayload;
-  b.on_recv = [&](const PubKey& src, morphe::MsgType type, wire::View pl) {
-    if (type != morphe::MsgType::Consensus) return;
+  b.on_recv = [&](const PubKey& src, services::MsgType type, wire::View pl) {
+    if (type != services::MsgType::Consensus) return;
     got = true;
     gsrc = src;
     gpayload.assign(pl.begin(), pl.end());
@@ -2010,7 +2012,7 @@ BOOST_AUTO_TEST_CASE(DirectDeliveryOverTcp) {
 
   BOOST_TEST(pump_until(io, [&] { return a.connected() >= 1 && b.connected() >= 1; }));
   const char* msg = "hello-mesh";
-  a.broadcast(morphe::MsgType::Consensus, morphe::Channel::Consensus,
+  a.broadcast(services::MsgType::Consensus, services::Channel::Consensus,
               wire::View(reinterpret_cast<const uint8_t*>(msg), std::strlen(msg)));
   BOOST_TEST(pump_until(io, [&] { return got; }));
   BOOST_TEST(got);
@@ -2032,8 +2034,8 @@ BOOST_AUTO_TEST_CASE(RelayedDeliveryTwoHop) {
 
   bool got = false;
   PubKey gsrc{};
-  c.on_recv = [&](const PubKey& src, morphe::MsgType type, wire::View) {
-    if (type != morphe::MsgType::Consensus) return;
+  c.on_recv = [&](const PubKey& src, services::MsgType type, wire::View) {
+    if (type != services::MsgType::Consensus) return;
     got = true;
     gsrc = src;
   };
@@ -2045,7 +2047,7 @@ BOOST_AUTO_TEST_CASE(RelayedDeliveryTwoHop) {
     return a.connected() >= 1 && c.connected() >= 1 && b.connected() >= 2;
   }));
   const char* msg = "via-relay";
-  a.send(kps[2].pub, morphe::MsgType::Consensus, morphe::Channel::Consensus,
+  a.send(kps[2].pub, services::MsgType::Consensus, services::Channel::Consensus,
          wire::View(reinterpret_cast<const uint8_t*>(msg), std::strlen(msg)));
   BOOST_TEST(pump_until(io, [&] { return got; }));
   BOOST_TEST(got);
@@ -2085,7 +2087,7 @@ BOOST_AUTO_TEST_CASE(HandshakeAuthenticatesMembersRejectsImposters) {
     sw.raw(a_challenge);
     Sig bad = kps[2].sign(wire::View(sb.data(), sb.size()));
     morphe::FrameHeader h;
-    h.chain_tag = tag; h.type = morphe::MsgType::HelloAuth; h.src = kps[1].pub; h.dest = kps[0].pub;
+    h.chain_tag = tag; h.type = services::MsgType::HelloAuth; h.src = kps[1].pub; h.dest = kps[0].pub;
     h.msg_id = morphe::make_msg_id(kps[1].pub, kps[0].pub, wire::View(bad.data(), 64));
     wire::Bytes f = morphe::encode_frame(h, wire::View(bad.data(), 64));
     boost::asio::write(*impostor, boost::asio::buffer(f));
@@ -2133,7 +2135,7 @@ BOOST_AUTO_TEST_CASE(HandshakeDeadlineDropsUnauthenticatedSocket) {
 
 BOOST_AUTO_TEST_CASE(FourRuntimesCommitOverTcp) {
   auto kps = morphe::mesh_keys(4);
-  morphe::Genesis g = morphe::mesh_genesis(kps);
+  services::Genesis g = morphe::mesh_genesis(kps);
   boost::asio::io_context io;
   const uint32_t tag =
       morphe::chain_tag_of(wire::View(reinterpret_cast<const uint8_t*>(g.chain_id.data()),
@@ -2146,9 +2148,9 @@ BOOST_AUTO_TEST_CASE(FourRuntimesCommitOverTcp) {
     for (int j = 0; j < 4; j++)
       if (i != j) meshes[i]->add_peer(kps[j].pub, "127.0.0.1", meshes[j]->port());
 
-  std::vector<std::unique_ptr<morphe::Runtime>> rts;
+  std::vector<std::unique_ptr<services::Runtime>> rts;
   for (int i = 0; i < 4; i++)
-    rts.push_back(std::make_unique<morphe::Runtime>(g, kps[i], /*pace=*/0, meshes[i].get()));
+    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], /*pace=*/0, meshes[i].get()));
 
   for (auto& m : meshes) m->start();
   BOOST_TEST(pump_until(io, [&] {
@@ -2190,7 +2192,7 @@ BOOST_AUTO_TEST_CASE(GeneratesConsistentHomes) {
   const int N = 4;
   const uint16_t base = 45000;
 
-  morphe::Genesis g = morphe::generate_testnet(dir, N, base);
+  services::Genesis g = morphe::generate_testnet(dir, N, base);
   const Hash want_hash = g.hash();
 
   std::vector<PubKey> keys;
@@ -2204,14 +2206,14 @@ BOOST_AUTO_TEST_CASE(GeneratesConsistentHomes) {
     std::ifstream gf(home + "/genesis.txt");
     std::ostringstream gs;
     gs << gf.rdbuf();
-    morphe::Genesis gi = morphe::Genesis::parse(gs.str());
+    services::Genesis gi = services::Genesis::parse(gs.str());
     BOOST_TEST((gi.hash() == want_hash));
 
     BOOST_TEST(morphe::read_config_u64(home, "listen_port", 0) == static_cast<uint64_t>(base + i));
     auto peers = morphe::parse_peers(home);
     BOOST_TEST(peers.size() == static_cast<size_t>(N - 1));
     for (const auto& p : peers) BOOST_TEST(p.host == "127.0.0.1");
-    keys.push_back(morphe::load_key(home + "/node.key").pub);
+    keys.push_back(services::load_key(home + "/node.key").pub);
   }
 
   for (int i = 0; i < N; ++i)
@@ -2236,7 +2238,7 @@ BOOST_AUTO_TEST_CASE(ParsePeersRejectsMalformedAndPortOverflow) {
   const std::string home = (fs::temp_directory_path() / ("morphe-peers-" + std::to_string(::getpid()))).string();
   fs::create_directories(home);
   KeyPair a = KeyPair::generate();
-  const std::string pk = morphe::pubkey_hex(a.pub);
+  const std::string pk = services::pubkey_hex(a.pub);
   auto write = [&](const std::string& body) { std::ofstream f(home + "/peers.txt", std::ios::trunc); f << body; };
 
   write(pk + " 127.0.0.1 40000\n");

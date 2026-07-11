@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace hyle {
+namespace hyle::services::kv {
 
 class State {
 public:
@@ -35,6 +35,6 @@ private:
   boost::unordered_flat_map<wire::Bytes, wire::Bytes, boost::hash<wire::Bytes>> kv_;
 };
 
-} // namespace hyle
+} // namespace hyle::services::kv
 
 #endif

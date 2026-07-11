@@ -8,7 +8,7 @@
 
 #include <vector>
 
-namespace hyle {
+namespace hyle::services::kv {
 
 class KvStateMachine : public StateMachine {
 public:
@@ -27,6 +27,6 @@ private:
   std::vector<Op> pending_;
 };
 
-} // namespace hyle
+} // namespace hyle::services::kv
 
 #endif

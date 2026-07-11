@@ -17,6 +17,7 @@
 #include "sim_cluster.h"
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 inline std::vector<KeyPair> mesh_keys(int n) {
   std::vector<KeyPair> kps;

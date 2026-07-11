@@ -9,6 +9,7 @@
 #include <vector>
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 struct TestnetPeer {
   PubKey pk{};

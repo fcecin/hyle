@@ -1,5 +1,5 @@
-#ifndef HYLE_MORPHE_APP_H
-#define HYLE_MORPHE_APP_H
+#ifndef HYLE_SERVICES_APP_H
+#define HYLE_SERVICES_APP_H
 
 #include <hyle/core/state_machine.h>
 #include <hyle/core/wire.h>
@@ -23,7 +23,14 @@
 #include <utility>
 #include <vector>
 
-namespace hyle::morphe {
+namespace hyle::services {
+
+// The economy schema is built on the kv facility (hyle::services::kv): typed cells over its
+// generic State. Pull in the types it uses -- not kv's own op codec, which would clash with
+// the economy's encode_ops/decode_ops.
+using kv::State;
+using kv::PowVerifier;
+using kv::Sha256PowVerifier;
 
 struct TxResult {
   uint64_t height = 0;
@@ -49,12 +56,14 @@ public:
   wire::Bytes build_payload(uint64_t height) override;
   bool validate_payload(wire::View payload) override;
   void apply_payload(const ApplyContext& ctx, wire::View payload) override;
+  void on_validators_removed(const std::vector<PubKey>& removed) override;
   wire::Bytes snapshot() const override;
   void restore(wire::View bytes) override;
 
   void submit_mint(MintOp op) { pending_.mints.push_back(op); }
   void submit_transfer(TransferOp op) { pending_.transfers.push_back(std::move(op)); }
   void submit_entry(EntryOp op) { pending_.entries.push_back(std::move(op)); }
+  void submit_sudo(SudoOp op) { pending_.sudos.push_back(std::move(op)); }
 
   Admit admit_transfer(const TransferOp& op) {
     return mempool_.admit_transfer(op, sequence(op.from), balance(op.from));
@@ -69,6 +78,9 @@ public:
   Admit admit_mint(const MintOp& op) {
     if (mint_seen_.count(op.solution) != 0) return Admit::Duplicate;
     return mempool_.admit_mint(op);
+  }
+  Admit admit_sudo(const SudoOp& op) {
+    return mempool_.admit_sudo(op, sequence(op.signer), balance(op.signer));
   }
   const Mempool& mempool() const { return mempool_; }
 
@@ -89,6 +101,12 @@ public:
   uint64_t last_timestamp() const { return last_timestamp_; }
   void set_now_fn(std::function<uint64_t()> fn) { now_fn_ = std::move(fn); }
 
+  // Credit created by sudo out of the mint sentinel, lifetime.
+  uint64_t sudo_minted() const { return sudo_minted_; }
+  // A member's live proposal, if any. approvals counts only current-member votes.
+  bool pending_info(const PubKey& proposer, Pending& out) const { return load_pending(proposer, out); }
+  unsigned pending_approvals(const Pending& p, const std::vector<PubKey>& members) const;
+
   bool tx_result(const Hash& id, TxResult& out) const;
   size_t tx_result_count() const { return results_.size(); }
   void add_on_commit(std::function<void(const CommitEvent&)> fn) {
@@ -100,12 +118,21 @@ private:
   bool apply_transfer(const TransferOp& o, uint64_t now);
   static bool valid_transfer_shape(const TransferOp& o);
   bool apply_entry(const EntryOp& o, uint64_t now);
+  bool apply_sudo(const SudoOp& o, const ApplyContext& ctx, uint64_t now);
+  // The vote that reaches quorum runs the act here, with the act's own guards waived.
+  void execute_sudo(wire::View inner, uint64_t now);
+  bool sudo_transfer(const TransferOp& o, uint64_t now);
+  bool sudo_entry(const EntryOp& o, uint64_t now);
+  void credit_dest(wire::View to, uint64_t amount, uint64_t now, const PubKey& owner_if_new);
   void mint_rotate_if_full();
   Account load_account(const PubKey& k) const;
   void store_account(const PubKey& k, const Account& a);
   bool load_entry(wire::View name, Entry& out) const;
   void store_entry(wire::View name, const Entry& e);
   void erase_entry(wire::View name);
+  bool load_pending(const PubKey& proposer, Pending& out) const;
+  void store_pending(const PubKey& proposer, const Pending& p);
+  void erase_pending(const PubKey& proposer);
   uint64_t rent_owed(wire::View name, const Entry& e, uint64_t now) const;
   void roll_rent(wire::View name, Entry& e, uint64_t now) const;
 
@@ -126,6 +153,7 @@ private:
   boost::unordered_flat_set<Hash, boost::hash<Hash>> mint_seen_;
 
   uint64_t last_timestamp_ = 0;
+  uint64_t sudo_minted_ = 0;
   std::function<uint64_t()> now_fn_;
 
   boost::unordered_flat_map<Hash, TxResult, boost::hash<Hash>> results_;
@@ -135,6 +163,6 @@ private:
   std::vector<PubKey>* dirty_ = nullptr;
 };
 
-} // namespace hyle::morphe
+} // namespace hyle::services
 
 #endif

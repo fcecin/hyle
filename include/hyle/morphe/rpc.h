@@ -9,6 +9,7 @@
 #include <string>
 
 namespace hyle::morphe {
+using namespace hyle::services;
 
 struct RpcError : std::exception {
   int code;

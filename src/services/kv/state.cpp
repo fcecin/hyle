@@ -4,7 +4,7 @@
 
 #include <algorithm>
 
-namespace hyle {
+namespace hyle::services::kv {
 
 void State::apply(const Op& op) {
   switch (op.kind) {
@@ -67,4 +67,4 @@ void State::restore(wire::View canonical) {
 
 Hash State::app_hash() const { return sha256(canonical()); }
 
-} // namespace hyle
+} // namespace hyle::services::kv

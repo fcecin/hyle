@@ -69,6 +69,9 @@ public:
   std::vector<PendingVote> pending() const;              // canonical order
   void set_pending(const std::vector<PendingVote>& v);
 
+  // 2/3 + 1 of the current members.
+  unsigned quorum() const;
+
 private:
   struct PropKey {
     Kind kind;
@@ -76,7 +79,6 @@ private:
     Id data;
     bool operator<(const PropKey& o) const;
   };
-  unsigned quorum() const;
   bool settle();
 
   std::map<Id, Id> members_;

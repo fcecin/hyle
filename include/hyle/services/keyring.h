@@ -1,10 +1,10 @@
-#ifndef HYLE_MORPHE_KEYRING_H
-#define HYLE_MORPHE_KEYRING_H
+#ifndef HYLE_SERVICES_KEYRING_H
+#define HYLE_SERVICES_KEYRING_H
 
 #include <string>
 #include <vector>
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 std::string keyring_dir();
 
@@ -16,6 +16,6 @@ std::string key_path(const std::string& name);
 
 std::vector<std::string> list_key_names();
 
-} // namespace hyle::morphe
+} // namespace hyle::services
 
 #endif

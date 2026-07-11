@@ -1,5 +1,5 @@
-#ifndef HYLE_MORPHE_GENESIS_H
-#define HYLE_MORPHE_GENESIS_H
+#ifndef HYLE_SERVICES_GENESIS_H
+#define HYLE_SERVICES_GENESIS_H
 
 #include <hyle/core/crypto.h>
 #include <hyle/core/wire.h>
@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace hyle::morphe {
+namespace hyle::services {
 
 struct Genesis {
   std::string chain_id;
@@ -26,6 +26,6 @@ struct Genesis {
   std::string to_text() const;
 };
 
-} // namespace hyle::morphe
+} // namespace hyle::services
 
 #endif

@@ -7,7 +7,10 @@
 #include <cstring>
 #include <vector>
 
-namespace hyle::morphe {
+namespace hyle::services {
+
+using kv::Op;
+using kv::pow_difficulty;
 
 namespace {
 uint64_t sat_add(uint64_t a, uint64_t b) { return a > UINT64_MAX - b ? UINT64_MAX : a + b; }
@@ -95,10 +98,7 @@ bool App::apply_mint(const MintOp& o) {
 }
 
 bool App::valid_transfer_shape(const TransferOp& o) {
-  if (o.to.empty()) return false;
-  if (o.to[0] == ACCOUNT_PREFIX) return o.to.size() == 33;
-  if (o.to[0] == ENTRY_PREFIX) return o.to.size() >= 2;
-  return false;
+  return valid_transfer_dest(wire::View(o.to.data(), o.to.size()));
 }
 
 bool App::apply_transfer(const TransferOp& o, uint64_t now) {
@@ -114,29 +114,33 @@ bool App::apply_transfer(const TransferOp& o, uint64_t now) {
   from.sequence++;
   store_account(o.from, from);
 
-  if (o.to[0] == ACCOUNT_PREFIX) {
-    PubKey dest{};
-    std::memcpy(dest.data(), o.to.data() + 1, 32);
-    Account to = load_account(dest);
-    to.balance = sat_add(to.balance, o.amount);
-    store_account(dest, to);
-  } else {
-    const wire::View name(o.to.data() + 1, o.to.size() - 1);
-    Entry e;
-    if (load_entry(name, e)) {
-      roll_rent(name, e, now);
-      e.balance = sat_add(e.balance, o.amount);
-    } else {
-      e = Entry{};
-      e.owner = o.from;
-      e.balance = o.amount;
-      e.created = now;
-      e.last_modified = now;
-      e.last_rent = now;
-    }
-    store_entry(name, e);
-  }
+  credit_dest(wire::View(o.to.data(), o.to.size()), o.amount, now, o.from);
   return true;
+}
+
+void App::credit_dest(wire::View to, uint64_t amount, uint64_t now, const PubKey& owner_if_new) {
+  if (to[0] == ACCOUNT_PREFIX) {
+    PubKey dest{};
+    std::memcpy(dest.data(), to.data() + 1, 32);
+    Account a = load_account(dest);
+    a.balance = sat_add(a.balance, amount);
+    store_account(dest, a);
+    return;
+  }
+  const wire::View name(to.data() + 1, to.size() - 1);
+  Entry e;
+  if (load_entry(name, e)) {
+    roll_rent(name, e, now);
+    e.balance = sat_add(e.balance, amount);
+  } else {
+    e = Entry{};
+    e.owner = owner_if_new;
+    e.balance = amount;
+    e.created = now;
+    e.last_modified = now;
+    e.last_rent = now;
+  }
+  store_entry(name, e);
 }
 
 bool App::load_entry(wire::View name, Entry& out) const {
@@ -154,6 +158,34 @@ void App::store_entry(wire::View name, const Entry& e) {
 void App::erase_entry(wire::View name) {
   const wire::Bytes key = entry_key(name);
   store_.apply(Op::del(wire::View(key.data(), key.size())));
+}
+
+bool App::load_pending(const PubKey& proposer, Pending& out) const {
+  const wire::Bytes key = pending_key(proposer);
+  const wire::Bytes* v = store_.get(wire::View(key.data(), key.size()));
+  if (v == nullptr) return false;
+  out = Pending::decode(wire::View(v->data(), v->size()));
+  return true;
+}
+void App::store_pending(const PubKey& proposer, const Pending& p) {
+  const wire::Bytes key = pending_key(proposer);
+  const wire::Bytes val = p.encode();
+  store_.apply(Op::put(wire::View(key.data(), key.size()), wire::View(val.data(), val.size())));
+}
+void App::erase_pending(const PubKey& proposer) {
+  const wire::Bytes key = pending_key(proposer);
+  store_.apply(Op::del(wire::View(key.data(), key.size())));
+}
+
+unsigned App::pending_approvals(const Pending& p, const std::vector<PubKey>& members) const {
+  unsigned n = 0;
+  for (const auto& v : p.voters)
+    if (std::find(members.begin(), members.end(), v) != members.end()) ++n;
+  return n;
+}
+
+void App::on_validators_removed(const std::vector<PubKey>& removed) {
+  for (const auto& k : removed) erase_pending(k);  // a departed member cannot use its slot
 }
 
 uint64_t App::rent_owed(wire::View name, const Entry& e, uint64_t now) const {
@@ -252,6 +284,136 @@ bool App::apply_entry(const EntryOp& o, uint64_t now) {
   return true;
 }
 
+// Sudo effects. The quorum-reaching vote runs the act with its guards waived.
+
+bool App::sudo_transfer(const TransferOp& o, uint64_t now) {
+  if (!valid_transfer_shape(o)) return false;
+  const wire::View to(o.to.data(), o.to.size());
+  const bool mint = is_mint_sentinel(o.from);
+  // A mint cannot create an entry (the sentinel would own it, unsignable); only fund one.
+  if (mint && to[0] == ENTRY_PREFIX) {
+    const wire::View name(to.data() + 1, to.size() - 1);
+    if (!entry_exists(name)) return false;
+  }
+  if (mint) {
+    sudo_minted_ = sat_add(sudo_minted_, o.amount);
+  } else {
+    if (!account_exists(o.from)) return false;
+    Account from = load_account(o.from);
+    if (from.balance < o.amount) return false;  // moves real funds; only the sentinel mints
+    from.balance -= o.amount;
+    store_account(o.from, from);
+  }
+  credit_dest(to, o.amount, now, o.from);
+  return true;
+}
+
+bool App::sudo_entry(const EntryOp& o, uint64_t now) {
+  if (o.name.empty()) return false;
+  const wire::View name(o.name.data(), o.name.size());
+  Entry e;
+  const bool exists = load_entry(name, e);
+
+  if (o.kind == EntryKind::Put) {
+    if (is_mint_sentinel(o.signer)) return false;  // would be unownable
+    if (exists) {
+      roll_rent(name, e, now);
+      e.balance = sat_add(e.balance, o.amount);
+    } else {
+      e = Entry{};
+      e.balance = o.amount;
+      e.created = now;
+      e.last_rent = now;
+    }
+    e.owner = o.signer;
+    e.last_modified = now;
+    e.payload.assign(o.payload.begin(), o.payload.end());
+    sudo_minted_ = sat_add(sudo_minted_, o.amount);
+    store_entry(name, e);
+    return true;
+  }
+  if (!exists) return false;
+  if (o.kind == EntryKind::Give) {
+    if (is_mint_sentinel(o.aux)) return false;
+    roll_rent(name, e, now);
+    e.owner = o.aux;
+    e.last_modified = now;
+    store_entry(name, e);
+    return true;
+  }
+  if (o.kind == EntryKind::Del) {
+    roll_rent(name, e, now);
+    Account owner = load_account(e.owner);
+    owner.balance = sat_add(owner.balance, e.balance);
+    store_account(e.owner, owner);
+    erase_entry(name);
+    return true;
+  }
+  erase_entry(name);  // Rip: erase, refund no one
+  return true;
+}
+
+void App::execute_sudo(wire::View inner, uint64_t now) {
+  Decoded d;
+  try {
+    d = decode_ops(inner);
+  } catch (const wire::Error&) {
+    return;  // it passed valid_sudo_inner when proposed; a decode failure here is a no-op
+  }
+  for (const auto& o : d.transfers) sudo_transfer(o, now);
+  for (const auto& o : d.entries) sudo_entry(o, now);
+}
+
+bool App::apply_sudo(const SudoOp& o, const ApplyContext& ctx, uint64_t now) {
+  const wire::Bytes sb = sudo_sign_bytes(chain_v(), o.kind, o.signer, o.seq, o.proposer, o.inner_hash);
+  if (!verify(o.signer, wire::View(sb.data(), sb.size()), o.sig)) return false;
+  // Only a current member may act; its account is created on first act. fee_sudo still gates
+  // a member with no balance.
+  if (std::find(ctx.members.begin(), ctx.members.end(), o.signer) == ctx.members.end()) return false;
+  Account acc = load_account(o.signer);
+  if (o.seq != acc.sequence) return false;
+  if (acc.balance < cfg_.fee_sudo) return false;
+
+  // Assemble the proposal cell, failing before the fee is charged if the op cannot apply.
+  Pending p;
+  if (o.kind == SudoKind::Propose) {
+    if (o.proposer != o.signer) return false;                     // proposer must be the signer
+    if (o.inner_hash != sha256(wire::View(o.inner.data(), o.inner.size()))) return false;
+    if (!valid_sudo_inner(wire::View(o.inner.data(), o.inner.size()))) return false;
+    // A re-propose of the identical act keeps its votes; a different act or an expired cell
+    // starts fresh.
+    Pending prev;
+    const bool keep = load_pending(o.proposer, prev) &&
+                      !(cfg_.sudo_ttl_secs > 0 && now > sat_add(prev.created, cfg_.sudo_ttl_secs)) &&
+                      prev.inner == o.inner;
+    if (keep) p.voters = prev.voters;
+    p.created = now;
+    p.add_voter(o.signer);
+    p.inner.assign(o.inner.begin(), o.inner.end());
+  } else {
+    const bool exists = load_pending(o.proposer, p);
+    const bool expired =
+        exists && cfg_.sudo_ttl_secs > 0 && now > sat_add(p.created, cfg_.sudo_ttl_secs);
+    if (expired) { erase_pending(o.proposer); return false; }     // a timeout, cleared on touch
+    if (!exists) return false;
+    if (o.inner_hash != sha256(wire::View(p.inner.data(), p.inner.size()))) return false;  // stale act
+    if (p.has_voted(o.signer)) return false;
+    p.add_voter(o.signer);
+  }
+
+  acc.balance -= cfg_.fee_sudo;
+  acc.sequence++;
+  store_account(o.signer, acc);
+
+  if (pending_approvals(p, ctx.members) >= ctx.quorum) {
+    execute_sudo(wire::View(p.inner.data(), p.inner.size()), now);
+    erase_pending(o.proposer);
+  } else {
+    store_pending(o.proposer, p);
+  }
+  return true;
+}
+
 void App::mint_rotate_if_full() {
   if (cfg_.mint_capacity > 0 && mint_fill_ >= cfg_.mint_capacity) {
     mint_key_ = sha256(wire::View(mint_acc_.data(), mint_acc_.size()));
@@ -268,6 +430,7 @@ wire::Bytes App::build_payload(uint64_t) {
     for (auto& m : md.mints) pending_.mints.push_back(std::move(m));
     for (auto& t : md.transfers) pending_.transfers.push_back(std::move(t));
     for (auto& e : md.entries) pending_.entries.push_back(std::move(e));
+    for (auto& s : md.sudos) pending_.sudos.push_back(std::move(s));
   }
   Decoded d;
   d.timestamp = now_fn_();
@@ -294,9 +457,15 @@ wire::Bytes App::build_payload(uint64_t) {
     }
     d.entries.push_back(o);
   }
+  for (const auto& o : pending_.sudos) {
+    const wire::Bytes sb = sudo_sign_bytes(chain_v(), o.kind, o.signer, o.seq, o.proposer, o.inner_hash);
+    if (!verify(o.signer, wire::View(sb.data(), sb.size()), o.sig)) continue;
+    d.sudos.push_back(o);
+  }
   pending_.mints.clear();
   pending_.transfers.clear();
   pending_.entries.clear();
+  pending_.sudos.clear();
   return encode_ops(d);
 }
 
@@ -324,6 +493,11 @@ bool App::validate_payload(wire::View payload) {
       const wire::Bytes sb = entry_sign_bytes(chain_v(), o.kind, o.signer, wire::View(o.name.data(), o.name.size()),
                                               o.seq, o.amount, o.aux,
                                               wire::View(o.payload.data(), o.payload.size()));
+      if (!verify(o.signer, wire::View(sb.data(), sb.size()), o.sig)) return false;
+    }
+    for (const auto& o : d.sudos) {
+      const wire::Bytes sb =
+          sudo_sign_bytes(chain_v(), o.kind, o.signer, o.seq, o.proposer, o.inner_hash);
       if (!verify(o.signer, wire::View(sb.data(), sb.size()), o.sig)) return false;
     }
     return true;
@@ -356,12 +530,21 @@ void App::apply_payload(const ApplyContext& ctx, wire::View payload) {
   const uint64_t now = d.timestamp;
   for (const auto& o : d.transfers) record(tx_id(chain_v(), o), apply_transfer(o, now));
   for (const auto& o : d.entries) record(tx_id(chain_v(), o), apply_entry(o, now));
+  for (const auto& o : d.sudos) record(tx_id(chain_v(), o), apply_sudo(o, ctx, now));
   last_timestamp_ = now;
   mint_rotate_if_full();
 
   dirty_ = nullptr;
   ev.changed_accounts = std::move(changed);
-  for (const auto& obs : commit_observers_) obs(ev);
+  // Invariant: nothing past decode_ops in this function may throw -- store_ is mutated with no
+  // rollback, so a throw would leave a partial block and diverge. Observers are telemetry; a
+  // throwing one is swallowed rather than propagated.
+  for (const auto& obs : commit_observers_) {
+    try {
+      obs(ev);
+    } catch (...) {
+    }
+  }
 }
 
 bool App::tx_result(const Hash& id, TxResult& out) const {
@@ -380,6 +563,7 @@ wire::Bytes App::snapshot() const {
   put_hash(w, mint_acc_);
   w.u64(mint_fill_);
   w.u64(last_timestamp_);
+  w.u64(sudo_minted_);
   std::vector<const Hash*> seen;
   seen.reserve(mint_seen_.size());
   for (const auto& s : mint_seen_) seen.push_back(&s);
@@ -397,16 +581,18 @@ void App::restore(wire::View bytes) {
   Hash na = get_hash(r);
   uint64_t nf = r.u64();
   uint64_t nts = r.u64();
+  uint64_t nsm = r.u64();
   decltype(mint_seen_) next_seen;
   size_t ns = r.count();
   for (size_t i = 0; i < ns; ++i) next_seen.insert(get_hash(r));
-  if (!r.empty()) throw wire::Error("morphe: snapshot has trailing bytes");
+  if (!r.empty()) throw wire::Error("services: snapshot has trailing bytes");
   store_.restore(sc);
   mint_key_ = nk;
   mint_acc_ = na;
   mint_fill_ = nf;
   last_timestamp_ = nts;
+  sudo_minted_ = nsm;
   mint_seen_ = std::move(next_seen);
 }
 
-} // namespace hyle::morphe
+} // namespace hyle::services

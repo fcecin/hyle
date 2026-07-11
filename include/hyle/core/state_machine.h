@@ -5,12 +5,17 @@
 #include <hyle/core/wire.h>
 
 #include <cstdint>
+#include <vector>
 
 namespace hyle {
 
 struct ApplyContext {
   uint64_t height = 0;
   PubKey proposer{};  // zero if the committed round's proposer was not observed
+  // The active validator set at this height and 2/3+1 of it, so an app that runs its own
+  // governance (sudo) can weigh votes without the base decoding the act.
+  std::vector<PubKey> members;
+  unsigned quorum = 0;
 };
 
 struct StateMachine {
@@ -22,6 +27,10 @@ struct StateMachine {
   virtual bool validate_payload(wire::View payload) = 0;
 
   virtual void apply_payload(const ApplyContext& ctx, wire::View payload) = 0;
+
+  // Validators that left the active set at the applied height, so an app can reclaim
+  // per-validator state. Part of the deterministic transition; every node runs it.
+  virtual void on_validators_removed(const std::vector<PubKey>& /*removed*/) {}
 
   // Canonical serialization of the app's own state.
   virtual wire::Bytes snapshot() const = 0;
