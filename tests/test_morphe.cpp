@@ -544,7 +544,7 @@ BOOST_AUTO_TEST_CASE(SingleValidatorAdvancesAndCommitsOps) {
   services::Genesis g;
   g.chain_id = "rt";
   g.validators = {v.pub};
-  services::Runtime rt(g, v, /*block_pace_ms=*/0);
+  services::Runtime rt(g, v, {/*block_pace_ms=*/0});
 
   rt.run_to(3);
   BOOST_TEST(rt.height() >= 3u);
@@ -973,7 +973,7 @@ BOOST_AUTO_TEST_CASE(FourRuntimesCommitOverMesh) {
   for (int i = 0; i < 4; i++)
     ports.push_back(std::make_unique<morphe::SimMeshPort>(&mesh, kps[i].pub));
   for (int i = 0; i < 4; i++)
-    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
+    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], services::NodeOptions{/*pace=*/0}, ports[i].get()));
 
   for (auto& rt : rts) rt->begin();
   const uint64_t GOAL = 3;
@@ -1016,7 +1016,7 @@ BOOST_AUTO_TEST_CASE(SubmittedTxFloodsAndCommitsChainWide) {
   for (int i = 0; i < 4; i++)
     ports.push_back(std::make_unique<morphe::SimMeshPort>(&mesh, kps[i].pub));
   for (int i = 0; i < 4; i++)
-    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
+    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], services::NodeOptions{/*pace=*/0}, ports[i].get()));
 
   wire::Bytes to = acct_key_p(kps[1].pub);
   services::TransferOp op = services::make_transfer(kps[0], kv_view(to), 100, /*seq=*/0, sv(g.chain_id));
@@ -1051,7 +1051,7 @@ BOOST_AUTO_TEST_CASE(PropagationReachesAllUnderLoss) {
   for (int i = 0; i < 5; i++)
     ports.push_back(std::make_unique<morphe::SimMeshPort>(&mesh, kps[i].pub));
   for (int i = 0; i < 5; i++)
-    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], /*pace=*/0, ports[i].get()));
+    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], services::NodeOptions{/*pace=*/0}, ports[i].get()));
 
   wire::Bytes to = acct_key_p(kps[1].pub);
   services::TransferOp op = services::make_transfer(kps[0], kv_view(to), 100, 0, sv(g.chain_id));
@@ -1590,7 +1590,7 @@ BOOST_AUTO_TEST_CASE(SubmitPollBalanceEndToEnd) {
   std::vector<std::unique_ptr<morphe::SimMeshPort>> ports;
   std::vector<std::unique_ptr<services::Runtime>> rts;
   for (int i = 0; i < 4; i++) ports.push_back(std::make_unique<morphe::SimMeshPort>(&mesh, kps[i].pub));
-  for (int i = 0; i < 4; i++) rts.push_back(std::make_unique<services::Runtime>(g, kps[i], 0, ports[i].get()));
+  for (int i = 0; i < 4; i++) rts.push_back(std::make_unique<services::Runtime>(g, kps[i], services::NodeOptions{0}, ports[i].get()));
 
   int commit_events = 0;
   rts[1]->app().add_on_commit([&](const services::CommitEvent& e) { if (e.height > 0) ++commit_events; });
@@ -2150,7 +2150,7 @@ BOOST_AUTO_TEST_CASE(FourRuntimesCommitOverTcp) {
 
   std::vector<std::unique_ptr<services::Runtime>> rts;
   for (int i = 0; i < 4; i++)
-    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], /*pace=*/0, meshes[i].get()));
+    rts.push_back(std::make_unique<services::Runtime>(g, kps[i], services::NodeOptions{/*pace=*/0}, meshes[i].get()));
 
   for (auto& m : meshes) m->start();
   BOOST_TEST(pump_until(io, [&] {

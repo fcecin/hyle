@@ -33,20 +33,28 @@ malachite::Config Runtime::make_engine_cfg(const KeyPair& key, uint64_t h,
   return cfg;
 }
 
-hyle::NodeConfig Runtime::make_node_cfg(const Genesis& g) {
+hyle::NodeConfig Runtime::make_node_cfg(const Genesis& g, const NodeOptions& opts) {
   hyle::NodeConfig cfg;
+  // Consensus rules come from the genesis (all nodes agree); operational params from opts.
   cfg.chain_id = g.chain_id;
+  cfg.member_cap = g.config.member_cap;
+  cfg.member_floor = g.config.member_floor;
+  cfg.max_value_bytes = g.config.max_value_bytes;
+  cfg.block_retention = opts.block_retention;
+  cfg.snapshot_interval = opts.snapshot_interval;
+  cfg.data_dir = opts.data_dir;
   return cfg;
 }
 
-Runtime::Runtime(const Genesis& g, const KeyPair& key, uint64_t block_pace_ms, Transport* net)
+Runtime::Runtime(const Genesis& g, const KeyPair& key, NodeOptions opts, Transport* net)
     : key_(key),
-      app_(App::from_genesis(g)),
+      app_(App::from_genesis(g, opts.mempool_capacity)),
       vset_(make_vset(g)),
-      node_(key, vset_, app_, make_node_cfg(g)),
+      node_(key, vset_, app_, make_node_cfg(g, opts)),
       engine_(std::make_unique<malachite::Engine>(make_engine_cfg(key, 1, vset_), node_)),
       net_(net),
-      pace_ms_(block_pace_ms) {
+      pace_ms_(opts.block_pace_ms),
+      evidence_dir_(opts.evidence_dir) {
   if (net_)
     net_->on_recv = [this](const PubKey& src, MsgType type, wire::View payload) {
       on_message(src, type, payload);

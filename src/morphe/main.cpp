@@ -222,7 +222,15 @@ int do_start(const std::string& home) {
   const KeyPair key = services::load_key(home + "/node.key");
   std::string err;
   if (!g.validate(err)) { std::fprintf(stderr, "bad genesis: %s\n", err.c_str()); return 1; }
-  const uint64_t pace = morphe::read_config_u64(home, "block_pace_ms", 1000);
+  // Node operational config: read from this node's own config file, not the genesis.
+  services::NodeOptions opts;
+  opts.block_pace_ms     = morphe::read_config_u64(home, "block_pace_ms", 1000);
+  opts.block_retention   = morphe::read_config_u64(home, "block_retention", 1024);
+  opts.snapshot_interval = morphe::read_config_u64(home, "snapshot_interval", 0);
+  opts.mempool_capacity  = static_cast<std::size_t>(morphe::read_config_u64(home, "mempool_capacity", 8192));
+  opts.data_dir          = home;                // vote WAL under the node home
+  opts.evidence_dir      = home + "/evidence";  // equivocation evidence
+  fs::create_directories(opts.evidence_dir);
   const std::vector<morphe::TestnetPeer> peers = morphe::parse_peers(home);
   const bool solo = peers.empty();
 
@@ -230,16 +238,14 @@ int do_start(const std::string& home) {
   std::optional<morphe::AsioMesh> mesh;
   std::optional<services::Runtime> rt_opt;
   if (solo) {
-    rt_opt.emplace(g, key, pace);
+    rt_opt.emplace(g, key, opts);
   } else {
     const uint16_t listen_port = static_cast<uint16_t>(morphe::read_config_u64(home, "listen_port", 0));
     const uint32_t tag = morphe::chain_tag_of(
         wire::View(reinterpret_cast<const uint8_t*>(g.chain_id.data()), g.chain_id.size()));
     mesh.emplace(io, key, tag, listen_port);
     for (const auto& p : peers) mesh->add_peer(p.pk, p.host, p.port);
-    rt_opt.emplace(g, key, pace, &*mesh);
-    fs::create_directories(home + "/evidence");
-    rt_opt->set_evidence_dir(home + "/evidence");
+    rt_opt.emplace(g, key, opts, &*mesh);
   }
   services::Runtime& rt = *rt_opt;
 
@@ -283,7 +289,7 @@ int do_start(const std::string& home) {
   if (mesh) mesh->start();
   rt.begin();
   rt.set_shutdown_hook([&io] { boost::asio::post(io, [&io] { io.stop(); }); });
-  Driver driver(io, rt, pace);
+  Driver driver(io, rt, opts.block_pace_ms);
   driver.tick();
   io.run();
   return 0;

@@ -87,7 +87,7 @@ struct Solo {
     g.config.rent_rate = rent_rate;
     g.config.fee_sudo = 0;  // keep the arithmetic in these tests about the acts, not the op fee
     g.config.sudo_ttl_secs = ttl;
-    rt = std::make_unique<services::Runtime>(g, v, 0);
+    rt = std::make_unique<services::Runtime>(g, v, services::NodeOptions{0});
     rt->run_to(1);
   }
 
@@ -236,7 +236,7 @@ BOOST_AUTO_TEST_CASE(ProposeChargesTheOpFee) {
   g.validators = {v.pub};
   g.allocations = {{v.pub, 100}};
   g.config.fee_sudo = 40;
-  services::Runtime rt(g, v, 0);
+  services::Runtime rt(g, v, {0});
   rt.run_to(1);
   const wire::View chain(reinterpret_cast<const uint8_t*>(g.chain_id.data()), g.chain_id.size());
 

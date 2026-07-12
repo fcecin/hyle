@@ -24,7 +24,7 @@ BOOST_AUTO_TEST_CASE(CoreAndServicesAloneRunASoloEconomyNode) {
   g.chain_id = "embed";
   g.validators = {v.pub};
   g.allocations = {{v.pub, 1000}};
-  services::Runtime rt(g, v, /*block_pace_ms=*/0);
+  services::Runtime rt(g, v, {/*block_pace_ms=*/0});
 
   rt.run_to(3);
   BOOST_TEST(rt.height() >= 3u);

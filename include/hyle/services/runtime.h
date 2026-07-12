@@ -17,11 +17,23 @@
 
 namespace hyle::services {
 
+// Operational config for THIS node: how fast it paces blocks and how much history it keeps in
+// RAM. Distinct from Genesis (the chain's consensus definition) -- nodes on one chain may differ.
+// snapshot_interval > 0 snapshots every N blocks and drops blocks at or below the snapshot; else
+// a rolling block_retention window bounds RAM.
+struct NodeOptions {
+  uint64_t block_pace_ms = 1000;
+  uint64_t block_retention = 1024;
+  uint64_t snapshot_interval = 0;
+  std::string data_dir;          // vote-WAL directory ("" = in-RAM, no crash recovery)
+  std::string evidence_dir;      // equivocation-evidence directory ("" = discard evidence)
+  std::size_t mempool_capacity = 8192;
+};
+
 class Runtime {
 public:
   // The Transport outlives the Runtime.
-  Runtime(const Genesis& g, const KeyPair& key, uint64_t block_pace_ms = 1000,
-          Transport* net = nullptr);
+  Runtime(const Genesis& g, const KeyPair& key, NodeOptions opts = {}, Transport* net = nullptr);
 
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;
@@ -65,7 +77,7 @@ private:
   static malachite::ValidatorSet make_vset(const Genesis& g);
   static malachite::Config make_engine_cfg(const KeyPair& key, uint64_t h,
                                            const malachite::ValidatorSet& vs);
-  static hyle::NodeConfig make_node_cfg(const Genesis& g);
+  static hyle::NodeConfig make_node_cfg(const Genesis& g, const NodeOptions& opts);
   wire::View chain_v() const {
     const std::string& c = app_.chain_id();
     return wire::View(reinterpret_cast<const uint8_t*>(c.data()), c.size());

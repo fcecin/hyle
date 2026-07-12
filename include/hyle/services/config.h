@@ -28,6 +28,13 @@ struct Config {
 
   uint64_t mint_capacity = 4096;
   Hash mint_genesis_key{};
+
+  // Consensus rules, not economy: the validator-set bounds that gate governance votes, and the
+  // max block payload that gates block acceptance. All nodes must agree, so they live here (in
+  // the hashed genesis), never in per-node config -- a disagreement forks the chain.
+  unsigned member_cap = 21;
+  unsigned member_floor = 1;
+  uint64_t max_value_bytes = 4u << 20;
 };
 
 inline uint64_t reward_for(const Config& cfg, unsigned difficulty) {

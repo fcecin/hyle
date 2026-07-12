@@ -48,9 +48,9 @@ struct CommitEvent {
 class App : public StateMachine {
 public:
   explicit App(Config cfg = {}, std::unique_ptr<PowVerifier> verifier = nullptr,
-               std::string chain_id = {});
+               std::string chain_id = {}, std::size_t mempool_capacity = 8192);
 
-  static App from_genesis(const Genesis& g);
+  static App from_genesis(const Genesis& g, std::size_t mempool_capacity = 8192);
   void seed_account(const PubKey& k, uint64_t balance);
 
   wire::Bytes build_payload(uint64_t height) override;

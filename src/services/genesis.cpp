@@ -28,7 +28,7 @@ uint64_t parse_u64(const std::string& s) {
 } // namespace
 
 // A Config field left out of canonical() drops it from the genesis hash and can cause a fork.
-static_assert(sizeof(Config) == 120,
+static_assert(sizeof(Config) == 136,
               "Config changed: update genesis canonical()/parse()/to_text() and this size");
 
 wire::Bytes Genesis::canonical() const {
@@ -53,6 +53,9 @@ wire::Bytes Genesis::canonical() const {
   w.u64(config.rip_bounty);
   w.u64(config.sudo_ttl_secs);
   w.u64(config.pbts_window_secs);
+  w.u64(config.member_cap);
+  w.u64(config.member_floor);
+  w.u64(config.max_value_bytes);
   w.count(vs.size());
   for (const auto& v : vs) put_key(w, v);
   w.count(al.size());
@@ -139,6 +142,9 @@ Genesis Genesis::parse(const std::string& text) {
     else if (key == "rip_bounty") { need(a); g.config.rip_bounty = parse_u64(a); }
     else if (key == "sudo_ttl_secs") { need(a); g.config.sudo_ttl_secs = parse_u64(a); }
     else if (key == "pbts_window_secs") { need(a); g.config.pbts_window_secs = parse_u64(a); }
+    else if (key == "member_cap") { need(a); g.config.member_cap = static_cast<unsigned>(parse_u64(a)); }
+    else if (key == "member_floor") { need(a); g.config.member_floor = static_cast<unsigned>(parse_u64(a)); }
+    else if (key == "max_value_bytes") { need(a); g.config.max_value_bytes = parse_u64(a); }
     else throw std::runtime_error("genesis: line " + std::to_string(lineno) + ": unknown key '" + key + "'");
   }
   std::string err;
@@ -166,6 +172,9 @@ std::string Genesis::to_text() const {
   o << "rip_bounty " << config.rip_bounty << "\n";
   o << "sudo_ttl_secs " << config.sudo_ttl_secs << "\n";
   o << "pbts_window_secs " << config.pbts_window_secs << "\n";
+  o << "member_cap " << config.member_cap << "\n";
+  o << "member_floor " << config.member_floor << "\n";
+  o << "max_value_bytes " << config.max_value_bytes << "\n";
   for (const auto& v : vs) o << "validator " << hex_encode(v.data(), 32) << "\n";
   for (const auto& a : al) o << "alloc " << hex_encode(a.first.data(), 32) << " " << a.second << "\n";
   return o.str();

@@ -26,11 +26,12 @@ Hash get_hash(wire::Reader& r) {
 }
 } // namespace
 
-App::App(Config cfg, std::unique_ptr<PowVerifier> verifier, std::string chain_id)
+App::App(Config cfg, std::unique_ptr<PowVerifier> verifier, std::string chain_id,
+         std::size_t mempool_capacity)
     : cfg_(cfg),
       chain_id_(std::move(chain_id)),
       verifier_(verifier ? std::move(verifier) : std::unique_ptr<PowVerifier>(new Sha256PowVerifier())),
-      mempool_(cfg, 8192, chain_id_),
+      mempool_(cfg, mempool_capacity, chain_id_),
       mint_key_(cfg.mint_genesis_key),
       mint_acc_(cfg.mint_genesis_key) {
   now_fn_ = [] {
@@ -41,8 +42,8 @@ App::App(Config cfg, std::unique_ptr<PowVerifier> verifier, std::string chain_id
   };
 }
 
-App App::from_genesis(const Genesis& g) {
-  App a(g.config, nullptr, g.chain_id);
+App App::from_genesis(const Genesis& g, std::size_t mempool_capacity) {
+  App a(g.config, nullptr, g.chain_id, mempool_capacity);
   for (const auto& alloc : g.allocations) a.seed_account(alloc.first, alloc.second);
   return a;
 }
