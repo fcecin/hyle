@@ -415,6 +415,28 @@ bool App::apply_sudo(const SudoOp& o, const ApplyContext& ctx, uint64_t now) {
   return true;
 }
 
+void App::apply_autofill(const std::vector<PubKey>& members) {
+  const uint64_t ceiling = cfg_.credit_autofill_ceiling;
+  if (ceiling == 0) return;
+  uint64_t maxbal = 0;
+  for (const auto& v : members) {
+    const uint64_t b = balance(v);
+    if (b > maxbal) maxbal = b;
+  }
+  const uint64_t lift = maxbal >= ceiling ? 0 : ceiling - maxbal;
+  const uint64_t bump = sat_add(lift, cfg_.refill_rate);
+  if (bump == 0) return;
+  for (const auto& v : members) {
+    Account a = load_account(v);
+    if (a.balance >= ceiling) continue;
+    const uint64_t room = ceiling - a.balance;
+    const uint64_t grant = bump < room ? bump : room;
+    if (grant == 0) continue;
+    a.balance += grant;
+    store_account(v, a);
+  }
+}
+
 void App::mint_rotate_if_full() {
   if (cfg_.mint_capacity > 0 && mint_fill_ >= cfg_.mint_capacity) {
     mint_key_ = sha256(wire::View(mint_acc_.data(), mint_acc_.size()));
@@ -534,6 +556,7 @@ void App::apply_payload(const ApplyContext& ctx, wire::View payload) {
   for (const auto& o : d.sudos) record(tx_id(chain_v(), o), apply_sudo(o, ctx, now));
   last_timestamp_ = now;
   mint_rotate_if_full();
+  apply_autofill(ctx.members);
 
   dirty_ = nullptr;
   ev.changed_accounts = std::move(changed);

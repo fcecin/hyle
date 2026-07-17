@@ -48,6 +48,15 @@ static void apply_block(services::App& app, uint64_t height) {
   wire::Bytes p = app.build_payload(height);
   app.apply_payload(ApplyContext{height, PubKey{}}, wire::View(p.data(), p.size()));
 }
+static void apply_block_with_members(services::App& app, uint64_t height,
+                                     const std::vector<PubKey>& members) {
+  wire::Bytes p = app.build_payload(height);
+  ApplyContext ctx;
+  ctx.height = height;
+  ctx.members = members;
+  ctx.quorum = static_cast<unsigned>(members.size());
+  app.apply_payload(ctx, wire::View(p.data(), p.size()));
+}
 static wire::View kv_view(const wire::Bytes& b) { return wire::View(b.data(), b.size()); }
 static wire::View sv(const char* s) { return wire::View(reinterpret_cast<const uint8_t*>(s), std::strlen(s)); }
 static wire::View sv(const std::string& s) {
@@ -2253,6 +2262,100 @@ BOOST_AUTO_TEST_CASE(ParsePeersRejectsMalformedAndPortOverflow) {
 
   BOOST_CHECK_THROW(morphe::generate_testnet(home, 4, 64000), std::runtime_error);
   fs::remove_all(home);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(MorpheAutofill)
+
+BOOST_AUTO_TEST_CASE(SnapsValidatorsToCeilingFromZero) {
+  services::Config cfg;
+  cfg.credit_autofill_ceiling = 10000;
+  cfg.refill_rate = 0;
+  services::App app(cfg);
+  KeyPair v1 = KeyPair::generate(), v2 = KeyPair::generate(), v3 = KeyPair::generate();
+  std::vector<PubKey> members{v1.pub, v2.pub, v3.pub};
+  BOOST_TEST(app.balance(v1.pub) == 0u);
+  apply_block_with_members(app, 1, members);
+  BOOST_TEST(app.balance(v1.pub) == 10000u);
+  BOOST_TEST(app.balance(v2.pub) == 10000u);
+  BOOST_TEST(app.balance(v3.pub) == 10000u);
+}
+
+// Depleted validator recovers via refill_rate while full peers pin lift = 0.
+BOOST_AUTO_TEST_CASE(DripRefillsDepletedWhilePeersFull) {
+  services::Config cfg;
+  cfg.credit_autofill_ceiling = 10000;
+  cfg.refill_rate = 100;
+  services::App app(cfg);
+  KeyPair v1 = KeyPair::generate(), v2 = KeyPair::generate(), v3 = KeyPair::generate();
+  std::vector<PubKey> members{v1.pub, v2.pub, v3.pub};
+  apply_block_with_members(app, 1, members);
+  app.seed_account(v2.pub, 5000);
+  apply_block_with_members(app, 2, members);
+  BOOST_TEST(app.balance(v1.pub) == 10000u);
+  BOOST_TEST(app.balance(v3.pub) == 10000u);
+  BOOST_TEST(app.balance(v2.pub) == 5100u);
+  apply_block_with_members(app, 3, members);
+  BOOST_TEST(app.balance(v2.pub) == 5200u);
+}
+
+// Richest below the ceiling: lift bumps everyone by the richest's deficit.
+BOOST_AUTO_TEST_CASE(LiftBumpsAllWhenRichestBelowCeiling) {
+  services::Config cfg;
+  cfg.credit_autofill_ceiling = 10000;
+  cfg.refill_rate = 0;
+  services::App app(cfg);
+  KeyPair v1 = KeyPair::generate(), v2 = KeyPair::generate(), v3 = KeyPair::generate();
+  std::vector<PubKey> members{v1.pub, v2.pub, v3.pub};
+  app.seed_account(v1.pub, 9000);
+  app.seed_account(v2.pub, 5000);
+  app.seed_account(v3.pub, 5000);
+  apply_block_with_members(app, 1, members);
+  BOOST_TEST(app.balance(v1.pub) == 10000u);
+  BOOST_TEST(app.balance(v2.pub) == 6000u);
+  BOOST_TEST(app.balance(v3.pub) == 6000u);
+}
+
+// A balance above the ceiling is never reduced and pins lift = 0.
+BOOST_AUTO_TEST_CASE(NeverReducesAboveCeilingBalance) {
+  services::Config cfg;
+  cfg.credit_autofill_ceiling = 10000;
+  cfg.refill_rate = 100;
+  services::App app(cfg);
+  KeyPair v1 = KeyPair::generate(), v2 = KeyPair::generate();
+  std::vector<PubKey> members{v1.pub, v2.pub};
+  app.seed_account(v1.pub, 12000);
+  app.seed_account(v2.pub, 4000);
+  apply_block_with_members(app, 1, members);
+  BOOST_TEST(app.balance(v1.pub) == 12000u);
+  BOOST_TEST(app.balance(v2.pub) == 4100u);
+}
+
+BOOST_AUTO_TEST_CASE(DisabledWhenCeilingZero) {
+  services::Config cfg;
+  services::App app(cfg);
+  KeyPair v1 = KeyPair::generate();
+  std::vector<PubKey> members{v1.pub};
+  apply_block_with_members(app, 1, members);
+  BOOST_TEST(app.balance(v1.pub) == 0u);
+}
+
+BOOST_AUTO_TEST_CASE(SurvivesSnapshotRestore) {
+  services::Config cfg;
+  cfg.credit_autofill_ceiling = 10000;
+  cfg.refill_rate = 100;
+  services::App app(cfg);
+  KeyPair v1 = KeyPair::generate(), v2 = KeyPair::generate();
+  std::vector<PubKey> members{v1.pub, v2.pub};
+  apply_block_with_members(app, 1, members);
+  app.seed_account(v2.pub, 3000);
+  apply_block_with_members(app, 2, members);
+  wire::Bytes snap = app.snapshot();
+  services::App app2(cfg);
+  app2.restore(wire::View(snap.data(), snap.size()));
+  BOOST_TEST(app2.balance(v1.pub) == app.balance(v1.pub));
+  BOOST_TEST(app2.balance(v2.pub) == app.balance(v2.pub));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

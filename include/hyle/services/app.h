@@ -125,6 +125,8 @@ private:
   bool sudo_entry(const EntryOp& o, uint64_t now);
   void credit_dest(wire::View to, uint64_t amount, uint64_t now, const PubKey& owner_if_new);
   void mint_rotate_if_full();
+  // Per-block credit autofill over ctx.members. See config.h.
+  void apply_autofill(const std::vector<PubKey>& members);
   Account load_account(const PubKey& k) const;
   void store_account(const PubKey& k, const Account& a);
   bool load_entry(wire::View name, Entry& out) const;

@@ -35,6 +35,12 @@ struct Config {
   unsigned member_cap = 21;
   unsigned member_floor = 1;
   uint64_t max_value_bytes = 4u << 20;
+
+  // Per-block credit autofill over the validator set:
+  // lift = credit_autofill_ceiling - max(validator balances); each validator
+  // balance = min(ceiling, balance + lift + refill_rate). 0 ceiling disables.
+  uint64_t credit_autofill_ceiling = 0;
+  uint64_t refill_rate = 0;
 };
 
 inline uint64_t reward_for(const Config& cfg, unsigned difficulty) {
