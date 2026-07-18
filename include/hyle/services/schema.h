@@ -18,8 +18,8 @@ inline constexpr uint8_t ACCOUNT_PREFIX = 'a';
 inline constexpr uint8_t ENTRY_PREFIX = 'e';
 inline constexpr uint8_t PENDING_PREFIX = 'g';
 
-// The mint sentinel. A sudo transfer from this key mints: the source is never debited. No
-// other source creates credit.
+// The mint sentinel. A sudo transfer from this key mints: the source is never debited. The
+// only other source of new credit is per-block validator autofill (see Config).
 inline constexpr PubKey MINT_SENTINEL{};
 
 inline bool is_mint_sentinel(const PubKey& k) { return k == MINT_SENTINEL; }

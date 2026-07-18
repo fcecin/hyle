@@ -67,11 +67,10 @@ target_link_libraries(hyle PUBLIC
 
 # Layer 2: hyle_services, the transport-agnostic node facilities on the base.
 add_library(hyle_services STATIC
-  # kv module: generic state store, ops, the minimal KV state machine, PoW verifier
+  # kv module: generic state store, ops, the minimal KV state machine
   src/services/kv/ops.cpp
   src/services/kv/state.cpp
   src/services/kv/kv_state_machine.cpp
-  src/services/kv/pow.cpp
   # the account/entry economy schema
   src/services/app.cpp
   src/services/ops.cpp

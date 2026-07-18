@@ -6,8 +6,6 @@
 
 namespace hyle::services {
 
-using kv::pow_difficulty;
-
 namespace {
 void put_key(wire::Writer& w, const PubKey& k) { w.raw(wire::View(k.data(), k.size())); }
 PubKey get_key(wire::Reader& r) {
@@ -27,13 +25,6 @@ wire::Bytes encode_ops(const Decoded& d) {
   wire::Bytes out;
   wire::Writer w(out);
   w.u64(d.timestamp);
-  w.count(d.mints.size());
-  for (const auto& o : d.mints) {
-    put_key(w, o.beneficiary);
-    w.u64(o.nonce);
-    put_hash(w, o.solution);
-    w.raw(wire::View(o.sig.data(), o.sig.size()));
-  }
   w.count(d.transfers.size());
   for (const auto& o : d.transfers) {
     put_key(w, o.from);
@@ -71,15 +62,6 @@ Decoded decode_ops(wire::View in) {
   wire::Reader r(in);
   Decoded d;
   d.timestamp = r.u64();
-  size_t nm = r.count();
-  for (size_t i = 0; i < nm; ++i) {
-    MintOp o;
-    o.beneficiary = get_key(r);
-    o.nonce = r.u64();
-    o.solution = get_hash(r);
-    std::memcpy(o.sig.data(), r.raw(64).data(), 64);
-    d.mints.push_back(o);
-  }
   size_t nt = r.count();
   for (size_t i = 0; i < nt; ++i) {
     TransferOp o;
@@ -136,10 +118,6 @@ Hash id_from(wire::View sign_bytes, const Sig& sig) {
 }
 }
 
-Hash tx_id(wire::View chain_id, const MintOp& o) {
-  const wire::Bytes sb = mint_sign_bytes(chain_id, o.beneficiary, o.nonce, o.solution);
-  return id_from(wire::View(sb.data(), sb.size()), o.sig);
-}
 Hash tx_id(wire::View chain_id, const TransferOp& o) {
   const wire::Bytes sb =
       xfer_sign_bytes(chain_id, o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq, o.max);
@@ -150,18 +128,6 @@ Hash tx_id(wire::View chain_id, const EntryOp& o) {
       entry_sign_bytes(chain_id, o.kind, o.signer, wire::View(o.name.data(), o.name.size()), o.seq,
                        o.amount, o.aux, wire::View(o.payload.data(), o.payload.size()));
   return id_from(wire::View(sb.data(), sb.size()), o.sig);
-}
-
-wire::Bytes mint_sign_bytes(wire::View chain_id, const PubKey& beneficiary, uint64_t nonce,
-                            const Hash& solution) {
-  wire::Bytes out;
-  wire::Writer w(out);
-  w.str("MORPHE_MINT_V1");
-  w.bytes(chain_id);
-  w.raw(wire::View(beneficiary.data(), beneficiary.size()));
-  w.u64(nonce);
-  w.raw(wire::View(solution.data(), solution.size()));
-  return out;
 }
 
 wire::Bytes xfer_sign_bytes(wire::View chain_id, const PubKey& from, wire::View to, uint64_t amount,
@@ -188,23 +154,6 @@ TransferOp make_transfer(const KeyPair& from, wire::View to, uint64_t amount, ui
   o.max = max;
   wire::Bytes sb = xfer_sign_bytes(chain_id, o.from, to, amount, seq, max);
   o.sig = from.sign(wire::View(sb.data(), sb.size()));
-  return o;
-}
-
-MintOp make_mint(const PowVerifier& v, const Hash& epoch_key, const KeyPair& beneficiary,
-                 unsigned min_diff, uint64_t start_nonce, wire::View chain_id) {
-  MintOp o;
-  o.beneficiary = beneficiary.pub;
-  for (uint64_t nonce = start_nonce;; ++nonce) {
-    Hash sol = v.hash(epoch_key, beneficiary.pub, nonce);
-    if (pow_difficulty(sol) >= min_diff) {
-      o.nonce = nonce;
-      o.solution = sol;
-      break;
-    }
-  }
-  wire::Bytes sb = mint_sign_bytes(chain_id, o.beneficiary, o.nonce, o.solution);
-  o.sig = beneficiary.sign(wire::View(sb.data(), sb.size()));
   return o;
 }
 
@@ -320,7 +269,6 @@ bool valid_transfer_dest(wire::View to) {
 bool valid_sudo_inner(wire::View inner) {
   try {
     Decoded d = decode_ops(inner);
-    if (!d.mints.empty()) return false;   // mint is proof-of-work, not governance
     if (!d.sudos.empty()) return false;   // no nested sudo
     if (d.transfers.empty() && d.entries.empty()) return false;
     for (const auto& o : d.transfers)

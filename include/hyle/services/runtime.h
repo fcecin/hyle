@@ -48,7 +48,6 @@ public:
   size_t peer_count() const { return net_ ? net_->peer_count() : 0; }
 
   Admit submit(const TransferOp& op);
-  Admit submit(const MintOp& op);
   Admit submit(const EntryOp& op);
   Admit submit(const SudoOp& op);
   void regossip();

@@ -11,7 +11,7 @@ const std::vector<std::pair<std::string, std::string>>& kToc() {
       {"overview", "what Morphe is and how the pieces fit"},
       {"quickstart", "get a chain running and query it in under a minute"},
       {"concepts", "accounts vs entries, the KV state, height, AppHash"},
-      {"economy", "mint, fees, transfers, entries, rent, sequences"},
+      {"economy", "credit issuance, fees, transfers, entries, rent, sequences"},
       {"keys", "identity, the node key, addressing accounts"},
       {"running", "init vs testnet, the home directory, solo vs networked"},
       {"config", "every config.txt setting"},
@@ -110,10 +110,12 @@ Next: `morphe man economy`.)"},
 
 The chain has its OWN native credit. Fees are FIXED and BURNED (removed from circulation).
 
-MINT (the on-ramp): the only way credit enters. A client mines a proof-of-work solution against the
-current epoch key and signs it; the block reward (minus the mint fee) is credited to the beneficiary
-ACCOUNT. Minting funds accounts only (accounts cannot be front-run or squatted). reward(D) grows with
-difficulty D and must exceed the mint fee or the mint is discarded before hashing.
+ISSUANCE (where credit enters). Two sources, both on-chain:
+  - Per-block autofill: every block, each validator balance is topped toward credit_autofill_ceiling
+    (see genesis config). A node that runs the chain is thereby self-funding.
+  - Governance: a sudo act transferring FROM the all-zero mint sentinel creates credit into any
+    account (the sentinel is never debited). See `morphe man governance`.
+There is no proof-of-work and no client-side mining.
 
 TRANSFER: signed by the source account; moves credit to any key.
   - to an ACCOUNT ('a'+pubkey): credits it (creates it if absent).
@@ -130,7 +132,7 @@ whenever it is touched. When its balance hits zero with rent owed, it becomes ri
 committed PBTS wall-clock (see `morphe man consensus`), not local time, so it is deterministic.
 
 Off-chain bridge: a user pays a server in that server's own credit; the server submits an on-chain
-transfer from its mined balance. The chain never measures cross-server credit.)"},
+transfer from its own balance. The chain never measures cross-server credit.)"},
 
       {"keys",
        R"(MORPHE -- keys and identity
@@ -194,7 +196,7 @@ are genesis-fixed (same on every node); see genesis.txt. config.txt is node-LOCA
 
 `peers.txt`: one peer per line, "<pubkey_hex> <host> <port>".
 `genesis.txt`: chain_id, one `validator <hex>` per member, `alloc <hex> <amount>` seeds, and the fee /
-reward / rent / mint parameters. `morphe genesis validate <path>` checks it.)"},
+rent / autofill parameters. `morphe genesis validate <path>` checks it.)"},
 
       {"networking",
        R"(MORPHE -- networking (the mesh)
@@ -294,7 +296,7 @@ CONTROL is gated by DEPLOYMENT, not by a token. The control_port (gov/leave/snap
 in-process auth: if you can reach it, you can drive the node. Bind it to loopback/internal and FIREWALL
 it -- exactly as real blockchain stacks do (an internet-exposed admin RPC invites exhaustion attacks; a
 token on a reachable port only makes control programs harder to write). The client_port carries no
-control ops and is anti-spam-gated by fees + PoW, so it is safe to expose.
+control ops and is anti-spam-gated by fees, so it is safe to expose.
 
 EVIDENCE: if a node sees a validator sign two different proposals at the same height/round, it writes a
 double-sign evidence file to <home>/evidence/. In v1 this is a local diagnostic (no automatic slashing).
@@ -329,7 +331,7 @@ entry        an 'e'+name key; owner + balance + payload; squattable; pays its ow
 AppHash      one sha256 over all state at a height; equal across honest nodes = they agree.
 height       block number; monotonic.
 sequence     per-account nonce; replay guard for signed ops.
-mint         PoW on-ramp that creates credit into an account.
+autofill     per-block top-up of each validator toward the credit ceiling; the issuance source.
 fee          fixed per-op charge, BURNED (removed from supply).
 rent         time-based drain on an entry's balance; deterministic via the committed PBTS time.
 rip          permissionless purge of a starved entry for a bounty.

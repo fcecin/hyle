@@ -12,7 +12,7 @@ A single BFT chain whose replicated state machine is an in-memory key-value stor
 - Standalone first, pluggable later. The network is self-contained (a persistent TCP mesh over Boost.Asio behind a `hyle::Transport` seam). Pluggable transport is a later refactor; the seam exists from day one.
 - Base-native governance, composite state. Governance is solved once at layer 1. `AppHash = hash(chain_id ++ governance ++ application)`. The base owns the value envelope `[parent AppHash][gov ops][opaque app payload]`, the composite hash, and the +2 validator-set schedule; the app is payload-only and never sees a governance op. One-height lag (value H embeds AppHash(H-1)).
 - Snapshot state sync: a joiner adopts the composite state at a height, trusting a quorum of member attestations over the AppHash. No history replay.
-- Native token. The chain has its own native credit, minted by permissionless proof-of-work (a `MintOp` carries a solution against the epoch key; reward scales with difficulty) plus governance sudo out of the mint sentinel. It is not reconciled against any server's local credit; the bridge to an external market is off-chain. The economy is a layer-2 services schema (`hyle::services`: `App` -- accounts, K,V entries with rent, PoW mint, governance/sudo), built on the kv facility's generic `State`. Core surfaces the committed proposer via `ApplyContext`; an app may reward it, but `App` does not (only PoW and sudo mint).
+- Native token. The chain has its own native credit, issued by per-block validator autofill (each validator topped toward a ceiling) plus governance sudo out of the mint sentinel; there is no proof-of-work. It is not reconciled against any server's local credit; the bridge to an external market is off-chain. The economy is a layer-2 services schema (`hyle::services`: `App` -- accounts, K,V entries with rent, governance/sudo, per-block autofill), built on the kv facility's generic `State`. Core surfaces the committed proposer via `ApplyContext`; an app may reward it, but `App` does not.
 
 ## Dependencies
 
@@ -46,7 +46,7 @@ include/hyle/core/       layer 1 (lib: hyle, namespace hyle): wire, crypto, cons
 include/hyle/services/   layer 2 (lib: hyle_services, namespace hyle::services): the node
                          minus the deployment shell. kv/ (namespace hyle::services::kv) is
                          the KV facility: generic State store, ops, the minimal
-                         KvStateMachine, PoW verifier. On top: the account/entry economy
+                         KvStateMachine. On top: the account/entry economy
                          schema (app, ops, schema, config, genesis), node machinery
                          (mempool, runtime, transport seam), util (keys, keyring, hex).
                          Depends on core.

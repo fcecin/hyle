@@ -23,7 +23,6 @@ enum class Admit {
   SeqGap,
   InsufficientFunds,
   Duplicate,
-  BelowFloor,
 };
 const char* admit_reason(Admit a);
 
@@ -34,7 +33,6 @@ public:
 
   Admit admit_transfer(const TransferOp& op, uint64_t committed_seq, uint64_t committed_balance);
   Admit admit_entry(const EntryOp& op, uint64_t committed_seq, uint64_t committed_balance);
-  Admit admit_mint(const MintOp& op);
   Admit admit_sudo(const SudoOp& op, uint64_t committed_seq, uint64_t committed_balance);
 
   Decoded drain(size_t max);
@@ -46,7 +44,7 @@ public:
   const Config& config() const { return cfg_; }
 
 private:
-  enum class Kind : uint8_t { Mint, Transfer, Entry, Sudo };
+  enum class Kind : uint8_t { Transfer, Entry, Sudo };
   struct Slot { Kind kind; size_t idx; };
 
   Hash id_of(wire::View sign_bytes, const Sig& sig) const;
@@ -58,7 +56,6 @@ private:
   Config cfg_;
   size_t cap_;
   std::string chain_id_;
-  std::vector<MintOp> mints_;
   std::vector<TransferOp> transfers_;
   std::vector<EntryOp> entries_;
   std::vector<SudoOp> sudos_;

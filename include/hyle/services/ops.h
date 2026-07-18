@@ -3,21 +3,11 @@
 
 #include <hyle/core/crypto.h>
 #include <hyle/core/wire.h>
-#include <hyle/services/kv/pow.h>
 
 #include <cstdint>
 #include <vector>
 
 namespace hyle::services {
-
-using kv::PowVerifier;
-
-struct MintOp {
-  PubKey beneficiary{};
-  uint64_t nonce = 0;
-  Hash solution{};
-  Sig sig{};
-};
 
 // `to` is the full destination key ('a'+pubkey or 'e'+name).
 struct TransferOp {
@@ -71,24 +61,19 @@ struct SudoOp {
 
 struct Decoded {
   uint64_t timestamp = 0;
-  std::vector<MintOp> mints;
   std::vector<TransferOp> transfers;
   std::vector<EntryOp> entries;
   std::vector<SudoOp> sudos;
 };
 
-// [timestamp][count(mints)][mints][count(transfers)][transfers][count(entries)][entries]
-// [count(sudos)][sudos].
+// [timestamp][count(transfers)][transfers][count(entries)][entries][count(sudos)][sudos].
 wire::Bytes encode_ops(const Decoded& d);
 Decoded decode_ops(wire::View in);
 
-Hash tx_id(wire::View chain_id, const MintOp& o);
 Hash tx_id(wire::View chain_id, const TransferOp& o);
 Hash tx_id(wire::View chain_id, const EntryOp& o);
 Hash tx_id(wire::View chain_id, const SudoOp& o);
 
-wire::Bytes mint_sign_bytes(wire::View chain_id, const PubKey& beneficiary, uint64_t nonce,
-                            const Hash& solution);
 wire::Bytes xfer_sign_bytes(wire::View chain_id, const PubKey& from, wire::View to, uint64_t amount,
                             uint64_t seq, bool max);
 wire::Bytes entry_sign_bytes(wire::View chain_id, EntryKind kind, const PubKey& signer, wire::View name,
@@ -96,9 +81,6 @@ wire::Bytes entry_sign_bytes(wire::View chain_id, EntryKind kind, const PubKey& 
 
 wire::Bytes sudo_sign_bytes(wire::View chain_id, SudoKind kind, const PubKey& signer, uint64_t seq,
                             const PubKey& proposer, const Hash& inner_hash);
-
-MintOp make_mint(const PowVerifier& v, const Hash& epoch_key, const KeyPair& beneficiary,
-                 unsigned min_diff, uint64_t start_nonce = 0, wire::View chain_id = {});
 
 TransferOp make_transfer(const KeyPair& from, wire::View to, uint64_t amount, uint64_t seq,
                          wire::View chain_id = {}, bool max = false);
@@ -119,7 +101,7 @@ SudoOp make_sudo_approve(const KeyPair& voter, uint64_t seq, const PubKey& propo
 bool valid_transfer_dest(wire::View to);
 
 // Whether inner is a runnable sudo act: a non-empty op batch of transfers and entries only
-// (no mint, no nested sudo), none leaving an entry owned by the mint sentinel. Non-mutating.
+// (no nested sudo), none leaving an entry owned by the mint sentinel. Non-mutating.
 bool valid_sudo_inner(wire::View inner);
 
 } // namespace hyle::services

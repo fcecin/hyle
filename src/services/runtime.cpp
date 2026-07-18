@@ -96,11 +96,6 @@ static wire::Bytes encode_tx_transfer(const TransferOp& op) {
   d.transfers.push_back(op);
   return encode_ops(d);
 }
-static wire::Bytes encode_tx_mint(const MintOp& op) {
-  Decoded d;
-  d.mints.push_back(op);
-  return encode_ops(d);
-}
 static wire::Bytes encode_tx_entry(const EntryOp& op) {
   Decoded d;
   d.entries.push_back(op);
@@ -116,14 +111,6 @@ Admit Runtime::submit(const TransferOp& op) {
   Admit a = app_.admit_transfer(op);
   if (a == Admit::Ok && net_) {
     wire::Bytes tx = encode_tx_transfer(op);
-    net_->broadcast(MsgType::Tx, Channel::Mempool, wire::View(tx.data(), tx.size()));
-  }
-  return a;
-}
-Admit Runtime::submit(const MintOp& op) {
-  Admit a = app_.admit_mint(op);
-  if (a == Admit::Ok && net_) {
-    wire::Bytes tx = encode_tx_mint(op);
     net_->broadcast(MsgType::Tx, Channel::Mempool, wire::View(tx.data(), tx.size()));
   }
   return a;
@@ -148,7 +135,7 @@ Admit Runtime::submit(const SudoOp& op) {
 void Runtime::regossip() {
   if (!net_) return;
   Decoded d = app_.mempool().snapshot();
-  if (d.mints.empty() && d.transfers.empty() && d.entries.empty() && d.sudos.empty()) return;
+  if (d.transfers.empty() && d.entries.empty() && d.sudos.empty()) return;
   wire::Bytes tx = encode_ops(d);
   net_->broadcast(MsgType::Tx, Channel::Mempool, wire::View(tx.data(), tx.size()));
 }
@@ -163,7 +150,6 @@ void Runtime::on_message(const PubKey&, MsgType type, wire::View payload) {
     try {
       Decoded d = decode_ops(payload);
       for (const auto& t : d.transfers) if (app_.admit_transfer(t) == Admit::Ok) fresh = true;
-      for (const auto& m : d.mints) if (app_.admit_mint(m) == Admit::Ok) fresh = true;
       for (const auto& e : d.entries) if (app_.admit_entry(e) == Admit::Ok) fresh = true;
       for (const auto& s : d.sudos) if (app_.admit_sudo(s) == Admit::Ok) fresh = true;
     } catch (const wire::Error&) {

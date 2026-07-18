@@ -160,7 +160,7 @@ boost::json::value RpcService::submit_tx(const json::object& p) {
   } catch (const wire::Error&) {
     throw RpcError{-32602, "malformed tx bytes"};
   }
-  const size_t total = d.transfers.size() + d.mints.size() + d.entries.size();
+  const size_t total = d.transfers.size() + d.entries.size();
   if (total == 0) throw RpcError{-32602, "empty tx"};
   if (total > 1)
     throw RpcError{-32602, "submit_tx takes exactly one op; got " + std::to_string(total) +
@@ -170,7 +170,6 @@ boost::json::value RpcService::submit_tx(const json::object& p) {
   const std::string& cid = rt_.app().chain_id();
   const wire::View cv(reinterpret_cast<const uint8_t*>(cid.data()), cid.size());
   if (!d.transfers.empty()) { a = rt_.submit(d.transfers[0]); id = tx_id(cv, d.transfers[0]); }
-  else if (!d.mints.empty()) { a = rt_.submit(d.mints[0]); id = tx_id(cv, d.mints[0]); }
   else { a = rt_.submit(d.entries[0]); id = tx_id(cv, d.entries[0]); }
   return json::object{{"tx_id", hex(id)}, {"accepted", a == Admit::Ok}, {"reason", admit_reason(a)}};
 }

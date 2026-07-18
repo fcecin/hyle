@@ -5,7 +5,6 @@
 #include "sim_mesh.h"
 
 #include <hyle/core/crypto.h>
-#include <hyle/services/kv/pow.h>
 #include <hyle/services/app.h>
 #include <hyle/morphe/asio_mesh.h>
 #include <hyle/morphe/frame.h>
@@ -113,35 +112,6 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(MorpheEconomy)
 
-BOOST_AUTO_TEST_CASE(MintFundsAccountByRewardMinusFee) {
-  services::Config cfg;
-  services::App app(cfg);
-  KeyPair bene = KeyPair::generate();
-  Sha256PowVerifier v;
-  services::MintOp m = services::make_mint(v, app.mint_key(), bene, /*min_diff=*/4);
-  const unsigned d = pow_difficulty(m.solution);
-  const uint64_t expected = app.mint_reward(d) - cfg.fee_mint;
-
-  app.submit_mint(m);
-  apply_block(app, 1);
-
-  BOOST_TEST(app.account_exists(bene.pub));
-  BOOST_TEST(app.balance(bene.pub) == expected);
-  BOOST_TEST(app.sequence(bene.pub) == 0u);
-  BOOST_TEST(app.mint_seen_count() == 1u);
-}
-
-BOOST_AUTO_TEST_CASE(CommittedMintReAdmitsAsDuplicate) {
-  services::App app;
-  KeyPair bene = KeyPair::generate();
-  Sha256PowVerifier v;
-  services::MintOp m = services::make_mint(v, app.mint_key(), bene, 4);
-  BOOST_TEST((app.admit_mint(m) == services::Admit::Ok));
-  app.submit_mint(m);
-  apply_block(app, 1);
-  BOOST_TEST((app.admit_mint(m) == services::Admit::Duplicate));
-}
-
 BOOST_AUTO_TEST_CASE(RipOfMissingEntryRejectedAtAdmission) {
   services::App app;
   wire::Bytes name = {'g', 'h', 'o', 's', 't'};
@@ -149,59 +119,16 @@ BOOST_AUTO_TEST_CASE(RipOfMissingEntryRejectedAtAdmission) {
   BOOST_TEST((app.admit_entry(rip) != services::Admit::Ok));
 }
 
-BOOST_AUTO_TEST_CASE(MintReplayCreditsOnce) {
-  services::App app;
-  KeyPair bene = KeyPair::generate();
-  Sha256PowVerifier v;
-  services::MintOp m = services::make_mint(v, app.mint_key(), bene, 4);
-  const uint64_t one = app.mint_reward(pow_difficulty(m.solution)) - app.config().fee_mint;
-
-  app.submit_mint(m);
-  apply_block(app, 1);
-  BOOST_TEST(app.balance(bene.pub) == one);
-
-  app.submit_mint(m);
-  apply_block(app, 2);
-  BOOST_TEST(app.balance(bene.pub) == one);
-}
-
-BOOST_AUTO_TEST_CASE(BelowFloorMintDiscarded) {
-  services::Config cfg;
-  cfg.fee_mint = 1000000;
-  cfg.reward_base = 1;
-  services::App app(cfg);
-  KeyPair bene = KeyPair::generate();
-  Sha256PowVerifier v;
-  services::MintOp m = services::make_mint(v, app.mint_key(), bene, /*min_diff=*/2);
-  app.submit_mint(m);
-  apply_block(app, 1);
-  BOOST_TEST(!app.account_exists(bene.pub));
-  BOOST_TEST(app.mint_seen_count() == 0u);
-}
-
-BOOST_AUTO_TEST_CASE(TamperedMintSignatureRejected) {
-  services::App app;
-  KeyPair bene = KeyPair::generate();
-  Sha256PowVerifier v;
-  services::MintOp m = services::make_mint(v, app.mint_key(), bene, 4);
-  m.sig[0] ^= 0xff;
-  app.submit_mint(m);
-  apply_block(app, 1);
-  BOOST_TEST(!app.account_exists(bene.pub));
-}
-
 BOOST_AUTO_TEST_CASE(SnapshotRestoreRoundTrips) {
   services::App app;
   KeyPair bene = KeyPair::generate();
-  Sha256PowVerifier v;
-  app.submit_mint(services::make_mint(v, app.mint_key(), bene, 4));
+  app.seed_account(bene.pub, 5000);
   apply_block(app, 1);
   const wire::Bytes snap = app.snapshot();
 
   services::App app2;
   app2.restore(wire::View(snap.data(), snap.size()));
   BOOST_TEST(app2.balance(bene.pub) == app.balance(bene.pub));
-  BOOST_TEST(app2.mint_seen_count() == app.mint_seen_count());
   BOOST_TEST((app2.snapshot() == snap));
 
   wire::Bytes bad(snap.begin(), snap.end() - 1);
@@ -209,13 +136,12 @@ BOOST_AUTO_TEST_CASE(SnapshotRestoreRoundTrips) {
   BOOST_TEST(app2.balance(bene.pub) == app.balance(bene.pub));
 }
 
-BOOST_AUTO_TEST_CASE(MintConvergesAcrossNodes) {
+BOOST_AUTO_TEST_CASE(SeededBalanceConvergesAcrossNodes) {
   std::vector<services::App> apps(4);
   std::vector<StateMachine*> sms;
   for (auto& a : apps) sms.push_back(&a);
   KeyPair bene = KeyPair::generate();
-  Sha256PowVerifier v;
-  apps[0].submit_mint(services::make_mint(v, apps[0].mint_key(), bene, 4));
+  for (auto& a : apps) a.seed_account(bene.pub, 4200);
 
   LocalCluster c(sms);
   c.run(8, 4);
@@ -235,9 +161,7 @@ BOOST_AUTO_TEST_CASE(TransferMovesCreditsBurnsFeeAdvancesSequence) {
   services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
-  Sha256PowVerifier v;
-  app.submit_mint(services::make_mint(v, app.mint_key(), A, /*min_diff=*/6));
-  apply_block(app, 1);
+  app.seed_account(A.pub, 1000);
   const uint64_t funded = app.balance(A.pub);
   BOOST_REQUIRE(funded >= 21u);
 
@@ -255,9 +179,7 @@ BOOST_AUTO_TEST_CASE(TransferReplayRejectedBySequence) {
   services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
-  Sha256PowVerifier v;
-  app.submit_mint(services::make_mint(v, app.mint_key(), A, 6));
-  apply_block(app, 1);
+  app.seed_account(A.pub, 1000);
   const wire::Bytes bkey = services::account_key(B.pub);
   const services::TransferOp t = services::make_transfer(A, kv_view(bkey), 10, /*seq=*/0);
 
@@ -276,9 +198,7 @@ BOOST_AUTO_TEST_CASE(InsufficientTransferRejected) {
   services::App app;
   KeyPair A = KeyPair::generate();
   KeyPair B = KeyPair::generate();
-  Sha256PowVerifier v;
-  app.submit_mint(services::make_mint(v, app.mint_key(), A, 4));
-  apply_block(app, 1);
+  app.seed_account(A.pub, 1000);
   const uint64_t funded = app.balance(A.pub);
 
   const wire::Bytes bkey = services::account_key(B.pub);
@@ -351,10 +271,9 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(MorpheEntries)
 
-static uint64_t fund(services::App& app, const KeyPair& A, uint64_t height, unsigned diff = 8) {
-  Sha256PowVerifier v;
-  app.submit_mint(services::make_mint(v, app.mint_key(), A, diff));
-  apply_block(app, height);
+static uint64_t fund(services::App& app, const KeyPair& A, uint64_t /*height*/,
+                     uint64_t amount = 1u << 20) {
+  app.seed_account(A.pub, amount);
   return app.balance(A.pub);
 }
 
@@ -516,14 +435,6 @@ BOOST_AUTO_TEST_CASE(ValidateCatchesBadGenesis) {
   g.validators = {A.pub, A.pub};
   BOOST_TEST(!g.validate(err));
   g.validators = {A.pub};
-  g.config.reward_base = 1;
-  g.config.fee_mint = UINT64_MAX;
-  BOOST_TEST(!g.validate(err));
-
-  g.config = {};
-  g.config.reward_base = 1;
-  g.config.fee_mint = 1;
-  BOOST_TEST(!g.validate(err));
 
   g.config = {};
   KeyPair B = KeyPair::generate();
@@ -611,16 +522,17 @@ BOOST_AUTO_TEST_CASE(SingleValidatorAdvancesAndCommitsOps) {
   services::Genesis g;
   g.chain_id = "rt";
   g.validators = {v.pub};
+  g.allocations = {{v.pub, 1000}};
   services::Runtime rt(g, v, {/*block_pace_ms=*/0});
 
   rt.run_to(3);
   BOOST_TEST(rt.height() >= 3u);
 
   KeyPair A = KeyPair::generate();
-  Sha256PowVerifier pv;
-  rt.app().submit_mint(services::make_mint(pv, rt.app().mint_key(), A, 4, 0, sv(g.chain_id)));
+  const wire::Bytes akey = services::account_key(A.pub);
+  rt.submit(services::make_transfer(v, kv_view(akey), 100, 0, sv(g.chain_id)));
   rt.run_to(rt.height() + 3);
-  BOOST_TEST(rt.app().balance(A.pub) > 0u);
+  BOOST_TEST(rt.app().balance(A.pub) == 100u);
 }
 
 BOOST_AUTO_TEST_CASE(OutOfWindowTimestampRejected) {
@@ -971,21 +883,6 @@ BOOST_AUTO_TEST_CASE(ChainedNoncesAndDrainOrder) {
   BOOST_TEST(mp.empty());
 }
 
-BOOST_AUTO_TEST_CASE(MintAdmissionFloorAndDedup) {
-  services::Config cfg;
-  services::Mempool mp{cfg};
-  Sha256PowVerifier v;
-  Hash key{};
-  KeyPair ben = KeyPair::generate();
-  services::MintOp good = services::make_mint(v, key, ben, /*min_diff=*/1);
-  BOOST_TEST((mp.admit_mint(good) == services::Admit::Ok));
-  BOOST_TEST((mp.admit_mint(good) == services::Admit::Duplicate));
-
-  services::MintOp junk = good;
-  junk.solution.fill(0xFF);
-  BOOST_TEST((mp.admit_mint(junk) == services::Admit::BelowFloor));
-}
-
 BOOST_AUTO_TEST_CASE(AdmittedTransferCommitsAndMovesBalance) {
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
   services::Genesis g;
@@ -1214,7 +1111,7 @@ BOOST_AUTO_TEST_CASE(FuzzSnapshotRestore) {
 BOOST_AUTO_TEST_CASE(FuzzGenesisParse) {
   FRng r{0x4444};
   int rejected = 0;
-  const char* toks[] = {"chain_id", "validator", "alloc", "fee_mint", "x", "\n", " ", "deadbeef", "42"};
+  const char* toks[] = {"chain_id", "validator", "alloc", "fee_transfer", "x", "\n", " ", "deadbeef", "42"};
   for (int i = 0; i < 10000; ++i) {
     std::string s;
     const int words = 1 + r.below(8);

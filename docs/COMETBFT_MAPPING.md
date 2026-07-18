@@ -18,7 +18,7 @@ Hyle's surface against a CometBFT node + ABCI app. Each item is COVERED, OUTER (
 - InitChain: no hook; the app starts empty. GAP (workaround: a genesis payload at height 1).
 - Validator updates: base-native governance (members vote), not app-returned. Different by design.
 - Query: OUTER (RPC). The app exposes its own in-process read accessors.
-- Native token / block reward: the canonical layer-2 app self-mints a reward to `ApplyContext.proposer` and offers an optional PoW mint (off by default).
+- Native token: the canonical layer-2 app issues credit by per-block validator autofill plus governance sudo out of the mint sentinel; it does not reward `ApplyContext.proposer` and there is no PoW mint.
 
 ## State sync
 

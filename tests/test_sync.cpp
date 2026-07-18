@@ -6,7 +6,6 @@
 #include <hyle/core/consensus.h>
 #include <hyle/core/crypto.h>
 #include <hyle/services/app.h>
-#include <hyle/services/kv/pow.h>
 
 #include <algorithm>
 #include <array>

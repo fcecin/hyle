@@ -13,7 +13,6 @@ namespace hyle::services {
 namespace {
 
 void put_key(wire::Writer& w, const PubKey& k) { w.raw(wire::View(k.data(), k.size())); }
-void put_hash(wire::Writer& w, const Hash& h) { w.raw(wire::View(h.data(), h.size())); }
 
 uint64_t parse_u64(const std::string& s) {
   uint64_t v = 0;
@@ -28,7 +27,7 @@ uint64_t parse_u64(const std::string& s) {
 } // namespace
 
 // A Config field left out of canonical() drops it from the genesis hash and can cause a fork.
-static_assert(sizeof(Config) == 152,
+static_assert(sizeof(Config) == 88,
               "Config changed: update genesis canonical()/parse()/to_text() and this size");
 
 wire::Bytes Genesis::canonical() const {
@@ -41,14 +40,9 @@ wire::Bytes Genesis::canonical() const {
   wire::Writer w(out);
   w.str("MORPHE_GENESIS_V1");
   w.bytes(wire::View(reinterpret_cast<const uint8_t*>(chain_id.data()), chain_id.size()));
-  w.u64(config.fee_mint);
   w.u64(config.fee_transfer);
   w.u64(config.fee_entry);
   w.u64(config.fee_sudo);
-  w.u64(config.reward_base);
-  w.u64(config.reward_max_diff);
-  w.u64(config.mint_capacity);
-  put_hash(w, config.mint_genesis_key);
   w.u64(config.rent_rate);
   w.u64(config.rip_bounty);
   w.u64(config.sudo_ttl_secs);
@@ -95,11 +89,6 @@ bool Genesis::validate(std::string& err) const {
     err = "duplicate allocation pubkey";
     return false;
   }
-  if (config.reward_base < 1) { err = "reward_base must be >= 1"; return false; }
-  if (config.reward_base <= config.fee_mint) {
-    err = "a floor-difficulty mint must net positive: reward_base must exceed fee_mint";
-    return false;
-  }
   if (config.rent_rate > 0 &&
       config.rip_bounty > std::min(config.fee_transfer, config.fee_entry)) {
     err = "with rent_rate>0, rip_bounty must not exceed min(fee_transfer,fee_entry) (inflation pump)";
@@ -132,14 +121,9 @@ Genesis Genesis::parse(const std::string& text) {
     if (key == "chain_id") { need(a); g.chain_id = a; }
     else if (key == "validator") { need(a); g.validators.push_back(hex_decode_fixed<32>(a)); }
     else if (key == "alloc") { need(a); need(b); g.allocations.emplace_back(hex_decode_fixed<32>(a), parse_u64(b)); }
-    else if (key == "fee_mint") { need(a); g.config.fee_mint = parse_u64(a); }
     else if (key == "fee_transfer") { need(a); g.config.fee_transfer = parse_u64(a); }
     else if (key == "fee_entry") { need(a); g.config.fee_entry = parse_u64(a); }
     else if (key == "fee_sudo") { need(a); g.config.fee_sudo = parse_u64(a); }
-    else if (key == "reward_base") { need(a); g.config.reward_base = parse_u64(a); }
-    else if (key == "reward_max_diff") { need(a); g.config.reward_max_diff = static_cast<unsigned>(parse_u64(a)); }
-    else if (key == "mint_capacity") { need(a); g.config.mint_capacity = parse_u64(a); }
-    else if (key == "mint_key") { need(a); g.config.mint_genesis_key = hex_decode_fixed<32>(a); }
     else if (key == "rent_rate") { need(a); g.config.rent_rate = parse_u64(a); }
     else if (key == "rip_bounty") { need(a); g.config.rip_bounty = parse_u64(a); }
     else if (key == "sudo_ttl_secs") { need(a); g.config.sudo_ttl_secs = parse_u64(a); }
@@ -164,14 +148,9 @@ std::string Genesis::to_text() const {
 
   std::ostringstream o;
   o << "chain_id " << chain_id << "\n";
-  o << "fee_mint " << config.fee_mint << "\n";
   o << "fee_transfer " << config.fee_transfer << "\n";
   o << "fee_entry " << config.fee_entry << "\n";
   o << "fee_sudo " << config.fee_sudo << "\n";
-  o << "reward_base " << config.reward_base << "\n";
-  o << "reward_max_diff " << config.reward_max_diff << "\n";
-  o << "mint_capacity " << config.mint_capacity << "\n";
-  o << "mint_key " << hex_encode(config.mint_genesis_key.data(), 32) << "\n";
   o << "rent_rate " << config.rent_rate << "\n";
   o << "rip_bounty " << config.rip_bounty << "\n";
   o << "sudo_ttl_secs " << config.sudo_ttl_secs << "\n";

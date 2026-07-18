@@ -1,13 +1,10 @@
 #include <hyle/services/mempool.h>
 
-#include <hyle/services/kv/pow.h>
 #include <hyle/services/schema.h>
 
 #include <algorithm>
 
 namespace hyle::services {
-
-using kv::pow_difficulty;
 
 const char* admit_reason(Admit a) {
   switch (a) {
@@ -19,7 +16,6 @@ const char* admit_reason(Admit a) {
     case Admit::SeqGap: return "nonce gap";
     case Admit::InsufficientFunds: return "insufficient funds";
     case Admit::Duplicate: return "duplicate";
-    case Admit::BelowFloor: return "below reward floor";
   }
   return "unknown";
 }
@@ -140,27 +136,10 @@ Admit Mempool::admit_sudo(const SudoOp& op, uint64_t committed_seq, uint64_t com
   return Admit::Ok;
 }
 
-Admit Mempool::admit_mint(const MintOp& op) {
-  if (order_.size() >= cap_) return Admit::Full;
-  if (reward_for(cfg_, pow_difficulty(op.solution)) <= cfg_.fee_mint) return Admit::BelowFloor;
-
-  const wire::Bytes sb = mint_sign_bytes(chain_v(), op.beneficiary, op.nonce, op.solution);
-  if (!verify(op.beneficiary, wire::View(sb.data(), sb.size()), op.sig)) return Admit::BadSig;
-
-  const Hash id = id_of(wire::View(sb.data(), sb.size()), op.sig);
-  if (seen(id)) return Admit::Duplicate;
-
-  order_.push_back({Kind::Mint, mints_.size()});
-  mints_.push_back(op);
-  seen_.insert(id);
-  return Admit::Ok;
-}
-
 Decoded Mempool::snapshot() const {
   Decoded d;
   for (const Slot& s : order_) {
     switch (s.kind) {
-      case Kind::Mint: d.mints.push_back(mints_[s.idx]); break;
       case Kind::Transfer: d.transfers.push_back(transfers_[s.idx]); break;
       case Kind::Entry: d.entries.push_back(entries_[s.idx]); break;
       case Kind::Sudo: d.sudos.push_back(sudos_[s.idx]); break;
@@ -175,13 +154,11 @@ Decoded Mempool::drain(size_t max) {
   for (size_t i = 0; i < n; ++i) {
     const Slot& s = order_[i];
     switch (s.kind) {
-      case Kind::Mint: d.mints.push_back(mints_[s.idx]); break;
       case Kind::Transfer: d.transfers.push_back(transfers_[s.idx]); break;
       case Kind::Entry: d.entries.push_back(entries_[s.idx]); break;
       case Kind::Sudo: d.sudos.push_back(sudos_[s.idx]); break;
     }
   }
-  mints_.clear();
   transfers_.clear();
   entries_.clear();
   sudos_.clear();

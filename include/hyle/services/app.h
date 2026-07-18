@@ -3,7 +3,6 @@
 
 #include <hyle/core/state_machine.h>
 #include <hyle/core/wire.h>
-#include <hyle/services/kv/pow.h>
 #include <hyle/services/kv/state.h>
 #include <hyle/services/config.h>
 #include <hyle/services/genesis.h>
@@ -12,25 +11,20 @@
 #include <hyle/services/schema.h>
 
 #include <boost/container_hash/hash.hpp>
-#include <boost/unordered/unordered_flat_set.hpp>
-
 #include <boost/unordered/unordered_flat_map.hpp>
 
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <memory>
 #include <utility>
 #include <vector>
 
 namespace hyle::services {
 
 // The economy schema is built on the kv facility (hyle::services::kv): typed cells over its
-// generic State. Pull in the types it uses -- not kv's own op codec, which would clash with
-// the economy's encode_ops/decode_ops.
+// generic State. Pull in State -- not kv's own op codec, which would clash with the economy's
+// encode_ops/decode_ops.
 using kv::State;
-using kv::PowVerifier;
-using kv::Sha256PowVerifier;
 
 struct TxResult {
   uint64_t height = 0;
@@ -47,8 +41,7 @@ struct CommitEvent {
 
 class App : public StateMachine {
 public:
-  explicit App(Config cfg = {}, std::unique_ptr<PowVerifier> verifier = nullptr,
-               std::string chain_id = {}, std::size_t mempool_capacity = 8192);
+  explicit App(Config cfg = {}, std::string chain_id = {}, std::size_t mempool_capacity = 8192);
 
   static App from_genesis(const Genesis& g, std::size_t mempool_capacity = 8192);
   void seed_account(const PubKey& k, uint64_t balance);
@@ -60,7 +53,6 @@ public:
   wire::Bytes snapshot() const override;
   void restore(wire::View bytes) override;
 
-  void submit_mint(MintOp op) { pending_.mints.push_back(op); }
   void submit_transfer(TransferOp op) { pending_.transfers.push_back(std::move(op)); }
   void submit_entry(EntryOp op) { pending_.entries.push_back(std::move(op)); }
   void submit_sudo(SudoOp op) { pending_.sudos.push_back(std::move(op)); }
@@ -75,10 +67,6 @@ public:
     }
     return mempool_.admit_entry(op, sequence(op.signer), balance(op.signer));
   }
-  Admit admit_mint(const MintOp& op) {
-    if (mint_seen_.count(op.solution) != 0) return Admit::Duplicate;
-    return mempool_.admit_mint(op);
-  }
   Admit admit_sudo(const SudoOp& op) {
     return mempool_.admit_sudo(op, sequence(op.signer), balance(op.signer));
   }
@@ -90,9 +78,6 @@ public:
   uint64_t sequence(const PubKey& k) const;
   const Config& config() const { return cfg_; }
   const std::string& chain_id() const { return chain_id_; }
-  const Hash& mint_key() const { return mint_key_; }
-  size_t mint_seen_count() const { return mint_seen_.size(); }
-  uint64_t mint_reward(unsigned difficulty) const;
   bool entry_exists(wire::View name) const;
   uint64_t entry_balance(wire::View name) const;
   PubKey entry_owner(wire::View name) const;
@@ -114,7 +99,6 @@ public:
   }
 
 private:
-  bool apply_mint(const MintOp& o);
   bool apply_transfer(const TransferOp& o, uint64_t now);
   static bool valid_transfer_shape(const TransferOp& o);
   bool apply_entry(const EntryOp& o, uint64_t now);
@@ -124,7 +108,6 @@ private:
   bool sudo_transfer(const TransferOp& o, uint64_t now);
   bool sudo_entry(const EntryOp& o, uint64_t now);
   void credit_dest(wire::View to, uint64_t amount, uint64_t now, const PubKey& owner_if_new);
-  void mint_rotate_if_full();
   // Per-block credit autofill over ctx.members. See config.h.
   void apply_autofill(const std::vector<PubKey>& members);
   Account load_account(const PubKey& k) const;
@@ -145,14 +128,8 @@ private:
   State store_;
   Config cfg_;
   std::string chain_id_;
-  std::unique_ptr<PowVerifier> verifier_;
   Decoded pending_;
   Mempool mempool_;
-
-  Hash mint_key_{};
-  Hash mint_acc_{};
-  uint64_t mint_fill_ = 0;
-  boost::unordered_flat_set<Hash, boost::hash<Hash>> mint_seen_;
 
   uint64_t last_timestamp_ = 0;
   uint64_t sudo_minted_ = 0;

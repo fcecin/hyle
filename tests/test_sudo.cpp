@@ -219,11 +219,8 @@ BOOST_AUTO_TEST_CASE(SudoRefusesToStrandAnEntryOnTheSentinel) {
   BOOST_TEST(entry_balance(s.app(), "real") == 10u);
 }
 
-BOOST_AUTO_TEST_CASE(ProofOfWorkAndEmptyRejectedAsInner) {
+BOOST_AUTO_TEST_CASE(EmptyRejectedAsInner) {
   Solo s;
-  services::Decoded m;
-  m.mints.push_back(services::MintOp{});
-  BOOST_TEST(!s.admits(services::encode_ops(m)));
   services::Decoded empty;  // well-formed, authorizes nothing
   BOOST_TEST(!s.admits(services::encode_ops(empty)));
 }
