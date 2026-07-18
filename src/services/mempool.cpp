@@ -40,7 +40,7 @@ Admit Mempool::admit_transfer(const TransferOp& op, uint64_t committed_seq,
   if (!valid_transfer_dest(wire::View(op.to.data(), op.to.size()))) return Admit::BadShape;
 
   const wire::Bytes sb =
-      xfer_sign_bytes(chain_v(), op.from, wire::View(op.to.data(), op.to.size()), op.amount, op.seq);
+      xfer_sign_bytes(chain_v(), op.from, wire::View(op.to.data(), op.to.size()), op.amount, op.seq, op.max);
   if (!verify(op.from, wire::View(sb.data(), sb.size()), op.sig)) return Admit::BadSig;
 
   const Hash id = id_of(wire::View(sb.data(), sb.size()), op.sig);
@@ -53,13 +53,19 @@ Admit Mempool::admit_transfer(const TransferOp& op, uint64_t committed_seq,
 
   const uint64_t cost = sat_add(op.amount, cfg_.fee_transfer);
   const uint64_t pending = debit_.count(op.from) ? debit_[op.from] : 0;
-  if (committed_balance < sat_add(pending, cost)) return Admit::InsufficientFunds;
+  const uint64_t avail = committed_balance > pending ? committed_balance - pending : 0;
+  uint64_t reserve = cost;
+  if (op.max) {
+    if (reserve > avail) reserve = avail;   // max takes at most what is left
+  } else if (avail < cost) {
+    return Admit::InsufficientFunds;
+  }
 
   order_.push_back({Kind::Transfer, transfers_.size()});
   transfers_.push_back(op);
   seen_.insert(id);
   next_seq_[op.from] = op.seq + 1;
-  debit_[op.from] = sat_add(pending, cost);
+  debit_[op.from] = sat_add(pending, reserve);
   return Admit::Ok;
 }
 

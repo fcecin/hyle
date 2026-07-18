@@ -104,18 +104,25 @@ bool App::valid_transfer_shape(const TransferOp& o) {
 
 bool App::apply_transfer(const TransferOp& o, uint64_t now) {
   if (!valid_transfer_shape(o)) return false;
-  const wire::Bytes sb = xfer_sign_bytes(chain_v(), o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq);
+  const wire::Bytes sb = xfer_sign_bytes(chain_v(), o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq, o.max);
   if (!verify(o.from, wire::View(sb.data(), sb.size()), o.sig)) return false;
   if (!account_exists(o.from)) return false;
   Account from = load_account(o.from);
   if (o.seq != from.sequence) return false;
-  const uint64_t cost = sat_add(o.amount, cfg_.fee_transfer);
-  if (from.balance < cost) return false;
+  uint64_t amount = o.amount;
+  uint64_t cost = sat_add(amount, cfg_.fee_transfer);
+  if (from.balance < cost) {
+    if (!o.max) return false;
+    // pay the fee if affordable, send whatever remains
+    const uint64_t fee = from.balance < cfg_.fee_transfer ? from.balance : cfg_.fee_transfer;
+    amount = from.balance - fee;
+    cost = from.balance;
+  }
   from.balance -= cost;
   from.sequence++;
   store_account(o.from, from);
 
-  credit_dest(wire::View(o.to.data(), o.to.size()), o.amount, now, o.from);
+  credit_dest(wire::View(o.to.data(), o.to.size()), amount, now, o.from);
   return true;
 }
 
@@ -466,7 +473,7 @@ wire::Bytes App::build_payload(uint64_t) {
   }
   for (const auto& o : pending_.transfers) {
     if (!valid_transfer_shape(o)) continue;
-    const wire::Bytes sb = xfer_sign_bytes(chain_v(), o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq);
+    const wire::Bytes sb = xfer_sign_bytes(chain_v(), o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq, o.max);
     if (!verify(o.from, wire::View(sb.data(), sb.size()), o.sig)) continue;
     d.transfers.push_back(o);
   }
@@ -508,7 +515,7 @@ bool App::validate_payload(wire::View payload) {
     for (const auto& o : d.transfers) {
       if (!valid_transfer_shape(o)) return false;
       const wire::Bytes sb =
-          xfer_sign_bytes(chain_v(), o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq);
+          xfer_sign_bytes(chain_v(), o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq, o.max);
       if (!verify(o.from, wire::View(sb.data(), sb.size()), o.sig)) return false;
     }
     for (const auto& o : d.entries) {

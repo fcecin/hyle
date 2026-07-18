@@ -289,6 +289,64 @@ BOOST_AUTO_TEST_CASE(InsufficientTransferRejected) {
   BOOST_TEST(app.sequence(A.pub) == 0u);
 }
 
+// max transfer over the balance clamps to what is available and succeeds.
+BOOST_AUTO_TEST_CASE(TransferMaxSendsAvailableOnShortfall) {
+  services::App app;
+  KeyPair A = KeyPair::generate();
+  KeyPair B = KeyPair::generate();
+  app.seed_account(A.pub, 1000);
+  const uint64_t fee = app.config().fee_transfer;
+  const wire::Bytes bkey = services::account_key(B.pub);
+  app.submit_transfer(services::make_transfer(A, kv_view(bkey), 5000, 0, {}, /*max=*/true));
+  apply_block(app, 1);
+  BOOST_TEST(app.balance(A.pub) == 0u);
+  BOOST_TEST(app.balance(B.pub) == 1000u - fee);
+  BOOST_TEST(app.sequence(A.pub) == 1u);
+}
+
+// max transfer within the balance behaves like a normal transfer.
+BOOST_AUTO_TEST_CASE(TransferMaxWithinFundsActsNormal) {
+  services::App app;
+  KeyPair A = KeyPair::generate();
+  KeyPair B = KeyPair::generate();
+  app.seed_account(A.pub, 1000);
+  const uint64_t fee = app.config().fee_transfer;
+  const wire::Bytes bkey = services::account_key(B.pub);
+  app.submit_transfer(services::make_transfer(A, kv_view(bkey), 100, 0, {}, /*max=*/true));
+  apply_block(app, 1);
+  BOOST_TEST(app.balance(A.pub) == 1000u - 100u - fee);
+  BOOST_TEST(app.balance(B.pub) == 100u);
+  BOOST_TEST(app.sequence(A.pub) == 1u);
+}
+
+// max transfer from a zero balance sends nothing and still succeeds.
+BOOST_AUTO_TEST_CASE(TransferMaxFromEmptySendsZero) {
+  services::App app;
+  KeyPair A = KeyPair::generate();
+  KeyPair B = KeyPair::generate();
+  app.seed_account(A.pub, 0);
+  const wire::Bytes bkey = services::account_key(B.pub);
+  app.submit_transfer(services::make_transfer(A, kv_view(bkey), 500, 0, {}, /*max=*/true));
+  apply_block(app, 1);
+  BOOST_TEST(app.balance(A.pub) == 0u);
+  BOOST_TEST(app.sequence(A.pub) == 1u);
+}
+
+// The mempool admits a max transfer over the balance; a plain one is rejected.
+BOOST_AUTO_TEST_CASE(TransferMaxAdmittedDespiteShortfall) {
+  services::App app;
+  KeyPair A = KeyPair::generate();
+  KeyPair B = KeyPair::generate();
+  KeyPair dst = KeyPair::generate();
+  app.seed_account(A.pub, 10);
+  app.seed_account(B.pub, 10);
+  const wire::Bytes dkey = services::account_key(dst.pub);
+  BOOST_TEST((app.admit_transfer(services::make_transfer(A, kv_view(dkey), 5000, 0, {}, true))
+              == services::Admit::Ok));
+  BOOST_TEST((app.admit_transfer(services::make_transfer(B, kv_view(dkey), 5000, 0, {}, false))
+              == services::Admit::InsufficientFunds));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(MorpheEntries)

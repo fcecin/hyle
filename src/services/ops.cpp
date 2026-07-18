@@ -40,6 +40,7 @@ wire::Bytes encode_ops(const Decoded& d) {
     w.bytes(wire::View(o.to.data(), o.to.size()));
     w.u64(o.amount);
     w.u64(o.seq);
+    w.u8(o.max ? 1 : 0);
     w.raw(wire::View(o.sig.data(), o.sig.size()));
   }
   w.count(d.entries.size());
@@ -87,6 +88,7 @@ Decoded decode_ops(wire::View in) {
     o.to.assign(to.begin(), to.end());
     o.amount = r.u64();
     o.seq = r.u64();
+    o.max = r.u8() != 0;
     std::memcpy(o.sig.data(), r.raw(64).data(), 64);
     d.transfers.push_back(std::move(o));
   }
@@ -140,7 +142,7 @@ Hash tx_id(wire::View chain_id, const MintOp& o) {
 }
 Hash tx_id(wire::View chain_id, const TransferOp& o) {
   const wire::Bytes sb =
-      xfer_sign_bytes(chain_id, o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq);
+      xfer_sign_bytes(chain_id, o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq, o.max);
   return id_from(wire::View(sb.data(), sb.size()), o.sig);
 }
 Hash tx_id(wire::View chain_id, const EntryOp& o) {
@@ -163,7 +165,7 @@ wire::Bytes mint_sign_bytes(wire::View chain_id, const PubKey& beneficiary, uint
 }
 
 wire::Bytes xfer_sign_bytes(wire::View chain_id, const PubKey& from, wire::View to, uint64_t amount,
-                            uint64_t seq) {
+                            uint64_t seq, bool max) {
   wire::Bytes out;
   wire::Writer w(out);
   w.str("MORPHE_XFER_V1");
@@ -172,17 +174,19 @@ wire::Bytes xfer_sign_bytes(wire::View chain_id, const PubKey& from, wire::View 
   w.bytes(to);
   w.u64(amount);
   w.u64(seq);
+  w.u8(max ? 1 : 0);
   return out;
 }
 
 TransferOp make_transfer(const KeyPair& from, wire::View to, uint64_t amount, uint64_t seq,
-                         wire::View chain_id) {
+                         wire::View chain_id, bool max) {
   TransferOp o;
   o.from = from.pub;
   o.to.assign(to.begin(), to.end());
   o.amount = amount;
   o.seq = seq;
-  wire::Bytes sb = xfer_sign_bytes(chain_id, o.from, to, amount, seq);
+  o.max = max;
+  wire::Bytes sb = xfer_sign_bytes(chain_id, o.from, to, amount, seq, max);
   o.sig = from.sign(wire::View(sb.data(), sb.size()));
   return o;
 }

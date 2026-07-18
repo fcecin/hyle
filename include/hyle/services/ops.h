@@ -25,6 +25,7 @@ struct TransferOp {
   wire::Bytes to;
   uint64_t amount = 0;
   uint64_t seq = 0;
+  bool max = false;   // send min(amount, available); never fails on insufficient funds
   Sig sig{};
 };
 
@@ -89,7 +90,7 @@ Hash tx_id(wire::View chain_id, const SudoOp& o);
 wire::Bytes mint_sign_bytes(wire::View chain_id, const PubKey& beneficiary, uint64_t nonce,
                             const Hash& solution);
 wire::Bytes xfer_sign_bytes(wire::View chain_id, const PubKey& from, wire::View to, uint64_t amount,
-                            uint64_t seq);
+                            uint64_t seq, bool max);
 wire::Bytes entry_sign_bytes(wire::View chain_id, EntryKind kind, const PubKey& signer, wire::View name,
                              uint64_t seq, uint64_t amount, const PubKey& aux, wire::View payload);
 
@@ -100,7 +101,7 @@ MintOp make_mint(const PowVerifier& v, const Hash& epoch_key, const KeyPair& ben
                  unsigned min_diff, uint64_t start_nonce = 0, wire::View chain_id = {});
 
 TransferOp make_transfer(const KeyPair& from, wire::View to, uint64_t amount, uint64_t seq,
-                         wire::View chain_id = {});
+                         wire::View chain_id = {}, bool max = false);
 
 EntryOp make_entry_put(const KeyPair& owner, wire::View name, uint64_t seq, uint64_t fund,
                        wire::View payload, wire::View chain_id = {});
