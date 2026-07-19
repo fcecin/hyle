@@ -20,6 +20,7 @@ struct SimMesh {
   std::map<PubKey, SimMeshPort*> ports;
   std::map<PubKey, SeenCache> seen;
   uint32_t loss_pct = 0;
+  size_t max_message_bytes = SIZE_MAX;  // per-message cap the chunker sizes bulk pieces to
   uint64_t rng = 0x9E3779B97F4A7C15ull;
   uint64_t relay_count = 0, dropped_no_relay = 0, seen_drop = 0, delivered = 0, lost = 0;
 
@@ -63,6 +64,7 @@ struct SimMeshPort : Transport {
   void broadcast(MsgType type, Channel, wire::View payload) override {
     mesh->broadcast(self, type, payload);
   }
+  size_t max_message() const override { return mesh->max_message_bytes; }
 };
 
 inline void SimMesh::deliver(const PubKey& to, const PubKey& from, MsgType type, wire::View payload,

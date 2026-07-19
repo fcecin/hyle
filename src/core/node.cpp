@@ -106,9 +106,37 @@ consensus::ValidatorSet members_as_set(const consensus::Governance& g) {
   return out;
 }
 
+// Validator set (key + power) for the governance canonical form. The +1/+2 scheduled sets are
+// serialized here so the AppHash commits to them; a joiner then trusts them by the attestation
+// quorum over that hash, not as separate unauthenticated snapshot fields.
+void put_valset(wire::Writer& w, const malachite::ValidatorSet& vs) {
+  w.count(vs.size());
+  for (const auto& v : vs) {
+    if (v.public_key.size() != 32) throw wire::Error("governance: validator key must be 32 bytes");
+    w.raw(wire::View(v.public_key.data(), 32));
+    w.u64(v.voting_power);
+  }
+}
+
+malachite::ValidatorSet get_valset(wire::Reader& r) {
+  malachite::ValidatorSet vs;
+  size_t n = r.count();
+  for (size_t i = 0; i < n; ++i) {
+    malachite::Validator v;
+    wire::View pk = r.raw(32);
+    v.public_key.assign(pk.begin(), pk.end());
+    v.address = v.public_key;
+    v.voting_power = r.u64();
+    vs.push_back(std::move(v));
+  }
+  return vs;
+}
+
 struct ParsedGov {
   std::vector<consensus::Governance::Member> members;
   std::vector<consensus::Governance::PendingVote> votes;
+  malachite::ValidatorSet next_set;   // authenticated: read from the hashed governance bytes
+  malachite::ValidatorSet next_set2;
 };
 consensus::Governance::Kind decode_gov_kind(uint8_t k) {
   if (k > static_cast<uint8_t>(consensus::Governance::Kind::Remove))
@@ -140,6 +168,8 @@ ParsedGov parse_governance(wire::View gov) {
     }
     out.votes.push_back(std::move(pv));
   }
+  out.next_set = get_valset(r);
+  out.next_set2 = get_valset(r);
   if (!r.empty()) throw wire::Error("governance: trailing bytes");
   return out;
 }
@@ -260,6 +290,11 @@ wire::Bytes Node::governance_canonical() const {
     w.count(pv.voters.size());
     for (const auto& v : pv.voters) w.raw(wire::View(v.data(), v.size()));
   }
+  // The validator-set schedule this committed state establishes: the sets operative at the next two
+  // heights. Binding them into the AppHash is what authenticates a snapshot's schedule -- a forged
+  // next_set changes the hash, so the attestation quorum over it no longer verifies.
+  put_valset(w, validators_for(last_decided_ + 1));
+  put_valset(w, validators_for(last_decided_ + 2));
   return out;
 }
 
@@ -478,6 +513,10 @@ void Node::decide(const malachite::Decision& d) {
         }
         composite_dirty_ = true;
         applied = true;
+        // Advance the committed height BEFORE computing the AppHash, so governance_canonical binds
+        // the sets for d.height+1 and d.height+2 (the schedule this height establishes). The next
+        // height's parent check reproduces the same hash with last_decided_ == d.height.
+        if (d.height > last_decided_) last_decided_ = d.height;
         last_att_.height = d.height;
         last_att_.app_hash = composite_hash();
         last_att_.signer = kp_.pub;
@@ -512,14 +551,14 @@ void Node::decide(const malachite::Decision& d) {
       ++it;
   }
   if (applied && snapshot_interval_ > 0 && d.height % snapshot_interval_ == 0) {
-    // self-attested: served to joiners, which pool attestations from many peers into a quorum
-    last_snapshot_ = build_snapshot({last_att_});
-    last_snapshot_height_ = d.height;
-    has_snapshot_ = true;
+    take_snapshot(d.height);
     LOGINFO << "snapshot taken at height " << d.height;
   }
   if (snapshot_interval_ > 0) {
-    while (!blocks_.empty() && blocks_.begin()->first <= last_snapshot_height_)
+    // Retain every block above the OLDER slot, so a joiner adopting the previous snapshot still
+    // finds its tail. K=2 keeps that reachable for one full interval after a fresh snapshot.
+    const uint64_t floor = oldest_snapshot_height();
+    while (!blocks_.empty() && blocks_.begin()->first <= floor)
       blocks_.erase(blocks_.begin());
   } else {
     while (!blocks_.empty() && blocks_.begin()->first + block_retention_ <= last_decided_)
@@ -627,8 +666,10 @@ bool Node::restore_snapshot(const Snapshot& s) {
   // decode everything that can throw into locals before mutating node state, so malformed input is rejected, not a crash
   try {
     ParsedGov pg = parse_governance(s.governance);
-    consensus::ValidatorSet next = to_consensus_set(s.next_set);
-    consensus::ValidatorSet next2 = to_consensus_set(s.next_set2);
+    // The schedule comes from the hashed governance bytes (authenticated by the AppHash quorum), not
+    // from s.next_set/s.next_set2, which are unauthenticated and only kept for the in-process path.
+    consensus::ValidatorSet next = to_consensus_set(pg.next_set);
+    consensus::ValidatorSet next2 = to_consensus_set(pg.next_set2);
     sm_.restore(wire::View(s.app));
     gov_ = consensus::Governance(pg.members, cap_, floor_);
     gov_.set_pending(pg.votes);
@@ -643,6 +684,100 @@ bool Node::restore_snapshot(const Snapshot& s) {
     return true;
   } catch (const wire::Error& ex) {
     LOGWARNING << "reject snapshot: malformed state (" << ex.what() << ")";
+    return false;
+  }
+}
+
+void Node::take_snapshot(uint64_t height) {
+  const int older = (snap_cur_ < 0) ? 0 : (1 - snap_cur_);
+  SnapSlot& slot = snaps_[older];
+  slot.height = height;
+  // checkpoint (small): the just-committed composite is the app_hash; the self-attestation over
+  // it lets a joiner pool this with other servers' attestations toward a quorum.
+  slot.checkpoint.height = height;
+  slot.checkpoint.app_hash = composite_hash();
+  slot.checkpoint.next_set = validators_for(height + 1);
+  slot.checkpoint.next_set2 = validators_for(height + 2);
+  slot.checkpoint.attestations.assign(1, last_att_);
+  // state blob (big): gov ++ app, serialized once so serving is a span, not a re-serialize.
+  const wire::Bytes gov = governance_canonical();
+  const wire::Bytes app = sm_.snapshot();
+  slot.blob = encode_state_blob(wire::View(gov.data(), gov.size()),
+                                wire::View(app.data(), app.size()));
+  slot.blob_hash = sha256(wire::View(slot.blob.data(), slot.blob.size()));
+  slot.valid = true;
+  snap_cur_ = older;
+}
+
+uint64_t Node::oldest_snapshot_height() const {
+  uint64_t h = 0;
+  bool any = false;
+  for (const auto& s : snaps_) {
+    if (!s.valid) continue;
+    if (!any || s.height < h) {
+      h = s.height;
+      any = true;
+    }
+  }
+  return any ? h : 0;
+}
+
+Snapshot Node::stored_snapshot() const {
+  Snapshot s;
+  if (snap_cur_ < 0 || !snaps_[snap_cur_].valid) return s;
+  const SnapSlot& slot = snaps_[snap_cur_];
+  StateBlob b = decode_state_blob(wire::View(slot.blob.data(), slot.blob.size()));
+  s.height = slot.height;
+  s.governance = std::move(b.governance);
+  s.app = std::move(b.app);
+  s.next_set = slot.checkpoint.next_set;
+  s.next_set2 = slot.checkpoint.next_set2;
+  s.attestations = slot.checkpoint.attestations;
+  return s;
+}
+
+const SnapshotCheckpoint* Node::servable_checkpoint() const {
+  if (snap_cur_ < 0 || !snaps_[snap_cur_].valid) return nullptr;
+  return &snaps_[snap_cur_].checkpoint;
+}
+
+bool Node::state_blob_for(uint64_t height, wire::View& out_blob, Hash& out_hash) const {
+  for (const auto& s : snaps_) {
+    if (s.valid && s.height == height) {
+      out_blob = wire::View(s.blob.data(), s.blob.size());
+      out_hash = s.blob_hash;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool Node::adopt_state_blob(const SnapshotCheckpoint& c, wire::View state_blob,
+                            const malachite::ValidatorSet& trusted) {
+  if (!checkpoint_has_quorum(c, trusted)) {
+    LOGWARNING << "reject state blob: checkpoint attestation quorum not met at height " << c.height;
+    return false;
+  }
+  try {
+    StateBlob b = decode_state_blob(state_blob);
+    const Hash got = composite_of(wire::View(chain_id_.data(), chain_id_.size()),
+                                  wire::View(b.governance.data(), b.governance.size()),
+                                  wire::View(b.app.data(), b.app.size()));
+    if (!(got == c.app_hash)) {
+      LOGWARNING << "reject state blob: state does not match the attested app_hash at height "
+                 << c.height;
+      return false;
+    }
+    Snapshot s;
+    s.height = c.height;
+    s.governance = std::move(b.governance);
+    s.app = std::move(b.app);
+    s.next_set = c.next_set;
+    s.next_set2 = c.next_set2;
+    LOGINFO << "adopt state blob at height " << c.height << VAL("apphash", c.app_hash);
+    return restore_snapshot(s);
+  } catch (const wire::Error& ex) {
+    LOGWARNING << "reject state blob: malformed (" << ex.what() << ")";
     return false;
   }
 }

@@ -12,14 +12,15 @@ LOG_MODULE("hyle.runtime")
 
 namespace hyle::services {
 
-// Catch-up limits. Responses are sized to the transport's max_message (always at least one
-// block, so progress never wedges on the budget); snapshot candidates and their pooled
-// attestations are capped against garbage floods.
-static constexpr size_t kSyncRespBudget = 1u << 20;
+// Catch-up limits. Checkpoint candidates and their pooled attestations are capped against garbage
+// floods; block batches and bulk pacing bound per-message and per-pump work.
 static constexpr size_t kSyncCandCap = 8;
 static constexpr size_t kSyncAttCap = 64;
 static constexpr unsigned kSyncBroadcastAfter = 3;  // stalled retries before broadcasting requests
 static constexpr unsigned kSyncResetAfter = 8;      // stalled retries before re-detecting from scratch
+static constexpr size_t kBlockBatch = 256;          // whole blocks per Blocks artifact
+static constexpr size_t kPiecesPerPump = 8;         // bulk pieces emitted per pump (pacing)
+static constexpr size_t kMaxPiece = 512 * 1024;     // cap a piece for pacing granularity
 
 malachite::ValidatorSet Runtime::make_vset(const Genesis& g) {
   malachite::ValidatorSet vs;
@@ -45,13 +46,14 @@ malachite::Config Runtime::make_engine_cfg(const KeyPair& key, uint64_t h,
 
 hyle::NodeConfig Runtime::make_node_cfg(const Genesis& g, const NodeOptions& opts) {
   hyle::NodeConfig cfg;
-  // Consensus rules come from the genesis (all nodes agree); operational params from opts.
+  // Consensus rules come from the genesis (all nodes agree). Operational params inherit the genesis
+  // default unless overridden locally; neither enters the AppHash, so an override cannot fork.
   cfg.chain_id = g.chain_id;
   cfg.member_cap = g.config.member_cap;
   cfg.member_floor = g.config.member_floor;
   cfg.max_value_bytes = g.config.max_value_bytes;
-  cfg.block_retention = opts.block_retention;
-  cfg.snapshot_interval = opts.snapshot_interval;
+  cfg.snapshot_interval = opts.snapshot_interval.value_or(g.default_snapshot_interval);
+  cfg.block_retention = opts.block_retention.value_or(g.default_block_retention);
   cfg.data_dir = opts.data_dir;
   return cfg;
 }
@@ -152,30 +154,23 @@ void Runtime::regossip() {
 }
 
 // ---- catch-up ----
-// A node behind the observed head pulls the retained blocks it lacks from a peer and replays
-// them under certificate verification; a node behind every peer's retained window first pulls
-// the stored snapshot, adopted on a >2/3 attestation quorum, then the block tail. Both ends
-// live here, so any Transport (TCP mesh, CES peer mesh) carries them unchanged.
+// The core deals only in whole artifacts. A behind node pools a small checkpoint from its peers (a
+// >2/3 attestation quorum over an app_hash), then pulls that height's state blob and the trailing
+// blocks as WHOLE artifacts over the bulk facility -- which splits and reassembles them beneath us,
+// so any reliable ordered transport (TCP, the CES RUDP stream) carries them and the core never sees
+// a chunk. The blob is verified against the quorum-checked hash; each block against its certificate.
 
-void Runtime::send_blocks_req() {
-  SyncBlocksReq req;
-  req.from = node_.applied_height();
-  req.nonce = ++sync_nonce_;  // varies retries past transport dedup caches
-  wire::Bytes out = encode_sync_blocks_req(req);
+void Runtime::send_blob_req(uint8_t kind, uint64_t height) {
+  BlobReq req;
+  req.kind = kind;
+  req.height = height;
+  req.nonce = ++sync_nonce_;
+  wire::Bytes out = encode_blob_req(req);
   const wire::View v(out.data(), out.size());
   if (have_sync_peer_)
     net_->send(sync_peer_, MsgType::ValueReq, Channel::Bulk, v);
   else
     net_->broadcast(MsgType::ValueReq, Channel::Bulk, v);
-}
-
-void Runtime::send_snap_req() {
-  SyncSnapReq req;
-  req.have = node_.applied_height();
-  req.nonce = ++sync_nonce_;
-  wire::Bytes out = encode_sync_snap_req(req);
-  // broadcast: adoption needs attestations pooled from a quorum of peers
-  net_->broadcast(MsgType::SnapReq, Channel::Bulk, wire::View(out.data(), out.size()));
 }
 
 void Runtime::request_sync() { maybe_sync(); }
@@ -186,8 +181,8 @@ void Runtime::maybe_sync() {
   if (node_.last_decided() > observed_head_) observed_head_ = node_.last_decided();
   const uint64_t applied = node_.applied_height();
   if (observed_head_ <= applied) {
-    want_snapshot_ = false;
-    if (!snap_cand_.empty()) snap_cand_.clear();
+    ckpt_cand_.clear();
+    have_quorum_ckpt_ = false;
     sync_stalls_ = 0;
     return;
   }
@@ -200,8 +195,8 @@ void Runtime::maybe_sync() {
     if (sync_stalls_ >= kSyncResetAfter) {
       // nobody could help from here; drop the stale signal and re-detect from live traffic
       observed_head_ = applied;
-      want_snapshot_ = false;
-      snap_cand_.clear();
+      ckpt_cand_.clear();
+      have_quorum_ckpt_ = false;
       sync_stalls_ = 0;
       return;
     }
@@ -210,70 +205,147 @@ void Runtime::maybe_sync() {
   }
   last_sync_applied_ = applied;
   last_sync_req_ = now;
-  if (want_snapshot_) {
-    snap_cand_.clear();  // stale candidates would pin heights the peers have moved past
-    send_snap_req();
+
+  // Snapshot path (far behind): once a quorum checkpoint is pooled, pull its state blob; else keep
+  // pooling checkpoints. Block path (near behind): always pull the tail -- it catches up a node
+  // still inside a peer's retained window with no snapshot at all.
+  if (have_quorum_ckpt_ && quorum_ckpt_.height > applied) {
+    send_blob_req(0 /*state blob*/, quorum_ckpt_.height);
   } else {
-    send_blocks_req();  // last: an inline transport can recurse into on_message
+    CheckpointReq creq{applied, ++sync_nonce_};
+    wire::Bytes cb = encode_checkpoint_req(creq);
+    net_->broadcast(MsgType::SnapReq, Channel::Bulk, wire::View(cb.data(), cb.size()));
   }
+  send_blob_req(1 /*blocks*/, applied);  // last: an inline transport can recurse into on_message
 }
 
-void Runtime::serve_blocks(const PubKey& src, wire::View payload) {
+void Runtime::serve_checkpoint(const PubKey& src, wire::View payload) {
   if (!net_) return;
-  SyncBlocksReq req;
+  CheckpointReq req;
   try {
-    req = decode_sync_blocks_req(payload);
+    req = decode_checkpoint_req(payload);
   } catch (const wire::Error&) {
     return;
   }
+  const SnapshotCheckpoint* c = node_.servable_checkpoint();
+  if (!c || c->height <= req.have) return;
+  wire::Bytes out = encode_checkpoint(*c);
+  net_->send(src, MsgType::SnapResp, Channel::Bulk, wire::View(out.data(), out.size()));
+}
+
+void Runtime::handle_checkpoint(const PubKey& src, wire::View payload) {
+  if (!net_) return;
+  SnapshotCheckpoint c;
+  try {
+    c = decode_checkpoint(payload);
+  } catch (const wire::Error&) {
+    return;
+  }
+  const uint64_t applied = node_.applied_height();
+  if (c.height <= applied) return;
+  if (c.height > observed_head_) observed_head_ = c.height;
+  sync_peer_ = src;
+  have_sync_peer_ = true;
+  // Pool by content key so per-server attestations (each carries one) merge toward a quorum.
+  const Hash key = checkpoint_content_key(c);
+  auto it = ckpt_cand_.find(key);
+  if (it == ckpt_cand_.end()) {
+    if (ckpt_cand_.size() >= kSyncCandCap) return;
+    if (c.attestations.size() > kSyncAttCap) c.attestations.resize(kSyncAttCap);
+    it = ckpt_cand_.emplace(key, std::move(c)).first;
+  } else {
+    for (const auto& a : c.attestations) {
+      if (it->second.attestations.size() >= kSyncAttCap) break;
+      bool dup = false;
+      for (const auto& e : it->second.attestations)
+        if (e.signer == a.signer) { dup = true; break; }
+      if (!dup) it->second.attestations.push_back(a);
+    }
+  }
+  // Trusted set is this node's best knowledge (genesis for a fresh joiner) -- the weak-subjectivity
+  // checkpoint. The schedule inside the app_hash is authenticated when the state blob is adopted.
+  const malachite::ValidatorSet trusted = node_.validators_for(applied + 1);
+  if (checkpoint_has_quorum(it->second, trusted)) {
+    have_quorum_ckpt_ = true;
+    quorum_ckpt_ = it->second;
+  }
+}
+
+void Runtime::serve_blob(const PubKey& src, wire::View payload) {
+  if (!net_) return;
+  BlobReq req;
+  try {
+    req = decode_blob_req(payload);
+  } catch (const wire::Error&) {
+    return;
+  }
+  if (req.kind == 0) {  // the state blob at a height, streamed whole
+    wire::View blob;
+    Hash h;
+    if (node_.state_blob_for(req.height, blob, h)) bulk_.enqueue(src, BulkKind::StateBlob, blob);
+    return;
+  }
+  // a batch of whole blocks after a height
   const uint64_t head = node_.applied_height();
-  if (req.from >= head) return;
-  size_t budget = kSyncRespBudget;
-  const size_t cap = net_->max_message();
-  if (cap != SIZE_MAX) budget = std::min(budget, cap > 4096 ? cap - 4096 : cap);
-  SyncBlocksResp resp;
-  resp.nonce = req.nonce;
-  resp.head = head;
-  size_t bytes = 0;
-  for (uint64_t h = req.from + 1; h <= head; ++h) {
-    const hyle::Block* b = node_.block_at(h);
-    if (!b) break;  // pruned or gapped past here; an empty resp tells them to fetch a snapshot
-    const size_t sz = 48 + b->value.size() + b->certificate.size();
-    if (!resp.blocks.empty() && bytes + sz > budget) break;
+  std::vector<SyncBlock> batch;
+  for (uint64_t hh = req.height + 1; hh <= head && batch.size() < kBlockBatch; ++hh) {
+    const hyle::Block* b = node_.block_at(hh);
+    if (!b) break;  // pruned or gapped; the joiner's checkpoint path covers a far-behind gap
     SyncBlock sb;
-    sb.height = h;
+    sb.height = hh;
     sb.proposer = b->proposer;
     sb.value = b->value;
     sb.certificate = b->certificate;
-    resp.blocks.push_back(std::move(sb));
-    bytes += sz;
+    batch.push_back(std::move(sb));
   }
-  wire::Bytes out = encode_sync_blocks_resp(resp);
-  if (out.size() > cap)
-    LOGWARNING << "sync: response for height " << (req.from + 1) << " (" << out.size()
-               << "B) exceeds the transport max message (" << cap << "B); it will not arrive";
-  net_->send(src, MsgType::ValueResp, Channel::Bulk, wire::View(out.data(), out.size()));
+  if (batch.empty()) return;
+  wire::Bytes enc = encode_blocks(batch);
+  bulk_.enqueue(src, BulkKind::Blocks, wire::View(enc.data(), enc.size()));
 }
 
-void Runtime::serve_snapshot(const PubKey& src, wire::View payload) {
+void Runtime::handle_bulk(const PubKey& src, BulkKind kind, wire::Bytes whole) {
   if (!net_) return;
-  SyncSnapReq req;
+  if (kind == BulkKind::StateBlob) {
+    if (!have_quorum_ckpt_) return;  // unsolicited or not yet quorum-verified
+    const uint64_t applied = node_.applied_height();
+    if (quorum_ckpt_.height <= applied) return;
+    const malachite::ValidatorSet trusted = node_.validators_for(applied + 1);
+    if (!node_.adopt_state_blob(quorum_ckpt_, wire::View(whole.data(), whole.size()), trusted))
+      return;
+    const uint64_t h = node_.applied_height();
+    engine_ = std::make_unique<malachite::Engine>(
+        make_engine_cfg(key_, h + 1, node_.validators_for(h + 1)), node_);
+    node_.clear_proposal();
+    node_.clear_sync();
+    started_ = h;
+    if (target_ != 0 && target_ < h) target_ = h;
+    ckpt_cand_.clear();
+    have_quorum_ckpt_ = false;
+    sync_stalls_ = 0;
+    LOGINFO << "sync: adopted state blob at height " << h;
+    if (observed_head_ > h) {
+      last_sync_req_ = std::chrono::steady_clock::now();
+      last_sync_applied_ = h;
+      send_blob_req(1, h);  // fetch the tail
+    }
+    return;
+  }
+  // Blocks
+  std::vector<SyncBlock> blocks;
   try {
-    req = decode_sync_snap_req(payload);
+    blocks = decode_blocks(wire::View(whole.data(), whole.size()));
   } catch (const wire::Error&) {
     return;
   }
-  if (!node_.has_snapshot() || node_.snapshot_height() <= req.have) return;
-  SyncSnapResp resp;
-  resp.nonce = req.nonce;
-  resp.snap = node_.stored_snapshot();
-  wire::Bytes out = encode_sync_snap_resp(resp);
-  if (out.size() > net_->max_message()) {
-    LOGWARNING << "sync: snapshot at height " << resp.snap.height << " (" << out.size()
-               << "B) exceeds the transport max message; joiners cannot sync until state fits";
-    return;
+  if (blocks.empty()) return;
+  if (blocks.front().height != node_.applied_height() + 1) return;
+  if (!replay_blocks(blocks)) return;
+  sync_stalls_ = 0;
+  if (observed_head_ > node_.applied_height()) {
+    last_sync_req_ = std::chrono::steady_clock::now();
+    last_sync_applied_ = node_.applied_height();
+    send_blob_req(1, node_.applied_height());
   }
-  net_->send(src, MsgType::SnapResp, Channel::Bulk, wire::View(out.data(), out.size()));
 }
 
 bool Runtime::replay_blocks(const std::vector<SyncBlock>& blocks) {
@@ -311,104 +383,26 @@ bool Runtime::replay_blocks(const std::vector<SyncBlock>& blocks) {
   return true;
 }
 
-void Runtime::handle_blocks_resp(const PubKey& src, wire::View payload) {
-  if (!net_) return;
-  SyncBlocksResp resp;
-  try {
-    resp = decode_sync_blocks_resp(payload);
-  } catch (const wire::Error&) {
-    return;
-  }
-  if (resp.head > observed_head_) observed_head_ = resp.head;
-  const uint64_t applied = node_.applied_height();
-  if (resp.head > applied) {
-    sync_peer_ = src;
-    have_sync_peer_ = true;
-  }
-  if (resp.blocks.empty()) {
-    // a peer ahead of us with no servable tail: the window is pruned, fetch a snapshot
-    if (resp.head > applied) want_snapshot_ = true;
-    return;
-  }
-  if (resp.blocks.front().height != applied + 1) return;  // stale or unusable
-  if (!replay_blocks(resp.blocks)) return;
-  want_snapshot_ = false;
-  sync_stalls_ = 0;
-  if (observed_head_ > node_.applied_height()) {
-    last_sync_req_ = std::chrono::steady_clock::now();
-    last_sync_applied_ = node_.applied_height();
-    send_blocks_req();  // last: an inline transport can recurse into on_message
-  }
-}
-
-void Runtime::handle_snap_resp(wire::View payload) {
-  if (!net_ || !want_snapshot_) return;  // no transport, or unsolicited
-  SyncSnapResp resp;
-  try {
-    resp = decode_sync_snap_resp(payload);
-  } catch (const wire::Error&) {
-    return;
-  }
-  const uint64_t applied = node_.applied_height();
-  if (resp.snap.height <= applied) return;
-  const Hash key = snapshot_content_key(resp.snap);
-  auto it = snap_cand_.find(key);
-  if (it == snap_cand_.end()) {
-    if (snap_cand_.size() >= kSyncCandCap) return;
-    it = snap_cand_.emplace(key, std::move(resp.snap)).first;
-    if (it->second.attestations.size() > kSyncAttCap) it->second.attestations.resize(kSyncAttCap);
-  } else {
-    for (const auto& a : resp.snap.attestations) {
-      if (it->second.attestations.size() >= kSyncAttCap) break;
-      bool dup = false;
-      for (const auto& e : it->second.attestations)
-        if (e.signer == a.signer) { dup = true; break; }
-      if (!dup) it->second.attestations.push_back(a);
-    }
-  }
-  // The trusted set is this node's best knowledge (genesis for a fresh joiner): the weak
-  // subjectivity checkpoint every BFT joiner needs. Attempt adoption only once a quorum of
-  // pooled attestations is even possible; adopt_snapshot verifies signatures and power.
-  const malachite::ValidatorSet trusted = node_.validators_for(applied + 1);
-  if (it->second.attestations.size() * 3 <= trusted.size() * 2) return;
-  if (!node_.adopt_snapshot(it->second, trusted)) return;
-  const uint64_t h = node_.applied_height();
-  engine_ = std::make_unique<malachite::Engine>(
-      make_engine_cfg(key_, h + 1, node_.validators_for(h + 1)), node_);
-  node_.clear_proposal();
-  node_.clear_sync();
-  started_ = h;
-  if (target_ != 0 && target_ < h) target_ = h;
-  snap_cand_.clear();
-  want_snapshot_ = false;
-  sync_stalls_ = 0;
-  LOGINFO << "sync: adopted snapshot at height " << h;
-  if (observed_head_ > h) {
-    last_sync_req_ = std::chrono::steady_clock::now();
-    last_sync_applied_ = h;
-    send_blocks_req();  // fetch the tail; last: an inline transport can recurse
-  }
-}
-
 void Runtime::on_message(const PubKey& src, MsgType type, wire::View payload) {
   if (type == MsgType::Consensus) {
     engine_->recv(malachite::BytesView(payload.data(), payload.size()));
     return;
   }
-  if (type == MsgType::ValueReq) {
-    serve_blocks(src, payload);
+  if (type == MsgType::SnapReq) {  // a peer asks for our checkpoint
+    serve_checkpoint(src, payload);
     return;
   }
-  if (type == MsgType::ValueResp) {
-    handle_blocks_resp(src, payload);
+  if (type == MsgType::SnapResp) {  // a peer's checkpoint to pool
+    handle_checkpoint(src, payload);
     return;
   }
-  if (type == MsgType::SnapReq) {
-    serve_snapshot(src, payload);
+  if (type == MsgType::ValueReq) {  // a peer asks for a state blob or a block batch
+    serve_blob(src, payload);
     return;
   }
-  if (type == MsgType::SnapResp) {
-    handle_snap_resp(payload);
+  if (type == MsgType::BulkChunk) {  // one piece of a streamed artifact
+    if (auto done = bulk_.receive(src, payload))
+      handle_bulk(done->src, done->kind, std::move(done->whole));
     return;
   }
   if (type == MsgType::Tx) {
@@ -506,6 +500,21 @@ bool Runtime::pump() {
   }
   for (auto& m : node_.drain_outbox()) {
     if (net_) net_->broadcast(MsgType::Consensus, Channel::Consensus, wire::View(m.data(), m.size()));
+    progress = true;
+  }
+  // Drain a few bulk pieces per pump: a long transfer streams gradually so consensus messages slot
+  // between pieces (no head-of-line block on a shared channel); a dedicated bulk channel is free of
+  // the concern but this is harmless there. Piece size fits the transport's max message.
+  if (net_ && bulk_.sending()) {
+    size_t piece = kMaxPiece;
+    const size_t cap = net_->max_message();
+    if (cap != SIZE_MAX) {
+      const size_t avail = cap > BulkTransfer::kPieceHeader + 128 ? cap - BulkTransfer::kPieceHeader - 128 : 1;
+      piece = std::min(piece, avail);
+    }
+    bulk_.pump(kPiecesPerPump, piece, [this](const PubKey& d, wire::View chunk) {
+      net_->send(d, MsgType::BulkChunk, Channel::Bulk, chunk);
+    });
     progress = true;
   }
   maybe_sync();  // last: an inline transport can recurse into on_message

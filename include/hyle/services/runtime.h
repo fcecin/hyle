@@ -3,6 +3,7 @@
 
 #include <hyle/core/node.h>
 #include <hyle/services/app.h>
+#include <hyle/services/bulk.h>
 #include <hyle/services/genesis.h>
 #include <hyle/services/sync.h>
 #include <hyle/services/transport.h>
@@ -15,6 +16,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace hyle::services {
@@ -25,8 +27,10 @@ namespace hyle::services {
 // a rolling block_retention window bounds RAM.
 struct NodeOptions {
   uint64_t block_pace_ms = 1000;
-  uint64_t block_retention = 1024;
-  uint64_t snapshot_interval = 0;
+  // Operational overrides. Unset inherits the chain's genesis default (always a sensible value); an
+  // explicit value overrides it locally. Neither enters the AppHash, so an override cannot fork.
+  std::optional<uint64_t> block_retention;
+  std::optional<uint64_t> snapshot_interval;
   std::string data_dir;          // vote-WAL directory ("" = in-RAM, no crash recovery)
   std::string evidence_dir;      // equivocation-evidence directory ("" = discard evidence)
   std::size_t mempool_capacity = 8192;
@@ -84,12 +88,11 @@ private:
   void record_evidence(uint64_t height, int64_t round, const PubKey& proposer, const Hash& a,
                        const Hash& b);
   void maybe_sync();
-  void send_blocks_req();
-  void send_snap_req();
-  void serve_blocks(const PubKey& src, wire::View payload);
-  void serve_snapshot(const PubKey& src, wire::View payload);
-  void handle_blocks_resp(const PubKey& src, wire::View payload);
-  void handle_snap_resp(wire::View payload);
+  void send_blob_req(uint8_t kind, uint64_t height);
+  void serve_checkpoint(const PubKey& src, wire::View payload);   // SnapReq -> CheckpointResp
+  void handle_checkpoint(const PubKey& src, wire::View payload);  // SnapResp -> pool to quorum
+  void serve_blob(const PubKey& src, wire::View payload);         // ValueReq -> stream via bulk
+  void handle_bulk(const PubKey& src, BulkKind kind, wire::Bytes whole);  // reassembled artifact
   bool replay_blocks(const std::vector<SyncBlock>& blocks);
   static malachite::ValidatorSet make_vset(const Genesis& g);
   static malachite::Config make_engine_cfg(const KeyPair& key, uint64_t h,
@@ -118,13 +121,15 @@ private:
   size_t evidence_count_ = 0;
   std::map<uint64_t, std::map<std::string, Hash>> proposal_seen_;
 
-  // catch-up (wire sync)
+  // catch-up (wire sync). The core deals in whole artifacts; bulk_ chunks/reassembles beneath us.
+  BulkTransfer bulk_;
   uint64_t observed_head_ = 0;   // highest peer height evidenced by verified Props and responses
   PubKey sync_peer_{};
   bool have_sync_peer_ = false;
   uint64_t sync_nonce_ = 0;
-  bool want_snapshot_ = false;
-  std::map<Hash, Snapshot> snap_cand_;   // by content key; attestations pooled per candidate
+  std::map<Hash, SnapshotCheckpoint> ckpt_cand_;  // pooled by content key until a quorum forms
+  bool have_quorum_ckpt_ = false;
+  SnapshotCheckpoint quorum_ckpt_;
   std::chrono::steady_clock::time_point last_sync_req_{};
   uint64_t last_sync_applied_ = 0;
   unsigned sync_stalls_ = 0;

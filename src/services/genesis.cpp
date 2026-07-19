@@ -53,6 +53,9 @@ wire::Bytes Genesis::canonical() const {
   w.u64(config.max_state_bytes);
   w.u64(config.credit_autofill_ceiling);
   w.u64(config.refill_rate);
+  // Operational sync-window defaults: agreed via the genesis, never in the per-height AppHash.
+  w.u64(default_snapshot_interval);
+  w.u64(default_block_retention);
   w.count(vs.size());
   for (const auto& v : vs) put_key(w, v);
   w.count(al.size());
@@ -135,6 +138,8 @@ Genesis Genesis::parse(const std::string& text) {
     else if (key == "max_state_bytes") { need(a); g.config.max_state_bytes = parse_u64(a); }
     else if (key == "credit_autofill_ceiling") { need(a); g.config.credit_autofill_ceiling = parse_u64(a); }
     else if (key == "refill_rate") { need(a); g.config.refill_rate = parse_u64(a); }
+    else if (key == "default_snapshot_interval") { need(a); g.default_snapshot_interval = parse_u64(a); }
+    else if (key == "default_block_retention") { need(a); g.default_block_retention = parse_u64(a); }
     else throw std::runtime_error("genesis: line " + std::to_string(lineno) + ": unknown key '" + key + "'");
   }
   std::string err;
@@ -163,6 +168,8 @@ std::string Genesis::to_text() const {
   o << "max_state_bytes " << config.max_state_bytes << "\n";
   o << "credit_autofill_ceiling " << config.credit_autofill_ceiling << "\n";
   o << "refill_rate " << config.refill_rate << "\n";
+  o << "default_snapshot_interval " << default_snapshot_interval << "\n";
+  o << "default_block_retention " << default_block_retention << "\n";
   for (const auto& v : vs) o << "validator " << hex_encode(v.data(), 32) << "\n";
   for (const auto& a : al) o << "alloc " << hex_encode(a.first.data(), 32) << " " << a.second << "\n";
   return o.str();

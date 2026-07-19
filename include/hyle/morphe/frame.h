@@ -17,7 +17,7 @@
 namespace hyle::morphe {
 using namespace hyle::services;
 
-inline constexpr uint8_t MSG_TYPE_MAX = static_cast<uint8_t>(MsgType::HelloAuth);
+inline constexpr uint8_t MSG_TYPE_MAX = static_cast<uint8_t>(MsgType::BulkChunk);
 
 inline constexpr uint32_t FRAME_MAGIC = 0x4D50484D;  // "MPHM"
 inline constexpr uint16_t PROTOCOL_VERSION = 1;

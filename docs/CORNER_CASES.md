@@ -71,24 +71,24 @@ Suites `SyncTests`, `SnapshotTests`, `LedgerTests`, `StateTests`.
 Deliberate limits:
 
 - A snapshot at height S is servable only once block S+1 exists (S+1 carries AppHash(S)). Blocks flow continuously, so this is a sub-one-height window.
-- Weak subjectivity: a fresh joiner trusts the validator set it is handed (the snapshot's `next_set`) as its checkpoint, as every BFT joiner must. `adopt_snapshot` verifies a quorum of attestations against an out-of-band trusted set; `restore_snapshot` takes `next_set` as given and verifies forward by certificate. A forged `next_set` is defeated only by `adopt_snapshot`'s trusted checkpoint, as CometBFT state sync requires trust_hash/trust_height.
+- Weak subjectivity: a fresh joiner verifies the snapshot's height and AppHash against a quorum of attestations from an out-of-band trusted validator set, as every BFT joiner must (CometBFT state sync's trust_hash/trust_height). The validator-set schedule (the sets operative at the next two heights) is bound INTO that AppHash via `governance_canonical`, so a forged schedule changes the hash and fails the quorum; `restore_snapshot` reads the schedule from the hashed governance bytes, never from an unauthenticated field. Regression: `SyncTests/ForgedSnapshotScheduleIsNotTrusted`.
 
 ## Wire catch-up
 
-Suite `WireSync` (`tests/test_wiresync.cpp`): the ValueReq/ValueResp + SnapReq/SnapResp protocol `hyle::services::Runtime` drives over any Transport.
+Suite `WireSync` (`tests/test_wiresync.cpp`): the catch-up protocol `hyle::services::Runtime` drives over any reliable ordered Transport. A small checkpoint pools to a quorum; the state blob and block batches stream as whole artifacts through the reusable `BulkTransfer` chunker, so the core only ever handles whole snapshots and whole blocks.
 
 - Behind detection is evidence-based: a verified Prop ahead of the applied height, or a decide whose value never arrived.
-- A laggard pulls blocks batch by batch (responses sized to the transport's `max_message`) and rejoins live consensus; the regression then proves its vote carries a quorum.
-- A zero-state joiner on a pruned chain pools per-server attestations from SnapResp broadcasts until the >2/3 quorum adopts, then pulls the block tail; the regression then votes it in and proves the chain cannot commit without it.
-- Replay probes a fresh engine and swaps it in only after the first certificate verifies, so a forged response cannot reset or poison the live round.
-- Requests carry a nonce so transport dedup caches do not swallow retries.
-- A lying head claim decays after bounded stalled retries instead of wedging the node into eternal polling.
-- A rebuilt engine has lost every vote delivered before the rebuild; a transport whose dedup also gated local delivery would deadlock the stalled round (the joiner needs the old votes, the peers need the joiner's precommit, and every rebroadcast is byte-identical). Transports must re-deliver consensus frames; dedup gates only forwarding.
+- A laggard pulls the block tail and rejoins live consensus; the regression then proves its vote carries a quorum.
+- A zero-state joiner on a pruned chain pools per-server attestations (each checkpoint carries one) until the >2/3 quorum adopts, streams the state blob, then pulls the block tail; the regression votes it in and proves the chain cannot commit without it.
+- The chunker moves an artifact many messages larger than one `max_message` and reassembles it byte-for-byte (`MultiPieceStateBlobSyncsOverChunker`, `JoinerSyncsOverAsioTcp` over real TCP). It rides the transport's reliable ordered send, so it does split/reassemble only.
+- Replay probes a fresh engine and swaps it in only after the first certificate verifies; a state blob is verified against the quorum-checked AppHash before adopt (`ForgedSyncArtifactsAreRejected`).
+- Requests carry a nonce so transport dedup caches do not swallow retries; a lying head claim decays after bounded stalled retries instead of wedging the node.
+- A rebuilt engine has lost every vote delivered before the rebuild; a transport whose dedup also gated local delivery would deadlock the stalled round. Transports must re-deliver consensus frames; dedup gates only forwarding.
 
 Deliberate limits:
 
-- snapshot_interval 0 plus a passed retention window leaves nothing that can serve a zero-state joiner: enable snapshots or size retention for the chain's join window.
-- A snapshot larger than the transport's `max_message` is refused with a warning; bound state (genesis `max_state_bytes`) under the mesh frame limit.
+- snapshot_interval 0 plus a passed retention window leaves nothing that can serve a zero-state joiner: enable snapshots or size the window (genesis `default_snapshot_interval`, derived from `max_state_bytes` and sync bandwidth) for the chain's join time.
+- A snapshot is a materialized copy; K=2 double-buffer holds two, so 2x `max_state_bytes` of RAM is the sync-serving budget.
 
 ## Adversarial input
 

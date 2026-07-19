@@ -16,7 +16,13 @@ enum class MsgType : uint8_t {
   Consensus = 4,
   Prop = 12,      // [u64 height][u64 round][proposer:32][value bytes][sig:64]
   HelloAuth = 13,
-  ValueReq = 5, ValueResp = 6, SnapReq = 7, SnapResp = 8, Tx = 9, Inv = 10, Want = 11,
+  // Sync control (small, normal channel): CheckpointReq/Resp pool the checkpoint; BlobReq asks for a
+  // state blob or a block batch, which streams back as BulkChunk pieces (reassembled by BulkTransfer).
+  ValueReq = 5,   // BlobReq
+  SnapReq = 7,    // CheckpointReq (broadcast)
+  SnapResp = 8,   // CheckpointResp (checkpoint bytes)
+  BulkChunk = 14, // one piece of a bulk artifact
+  ValueResp = 6, Tx = 9, Inv = 10, Want = 11,
 };
 
 enum class Channel : uint8_t { Consensus = 0, Mempool = 1, Bulk = 2 };

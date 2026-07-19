@@ -134,12 +134,15 @@ BOOST_AUTO_TEST_CASE(SnapshotTakenOnCadencePrunesBlocks) {
   LocalCluster c(sms, /*block_retention=*/1024, /*snapshot_interval=*/3);
   c.run(10, 4);
 
+  // K=2 double buffer: snapshots at 3, 6, 9; current is 9, previous is 6. Blocks are pruned only
+  // above the OLDER slot (6), so 7..10 are retained -- a joiner adopting the previous snapshot at 6
+  // still finds its tail.
   for (int i = 0; i < 4; i++) {
     Node& n = *c.nodes[i];
     BOOST_TEST(n.has_snapshot());
     BOOST_TEST(n.snapshot_height() == 9u);
-    BOOST_TEST(n.oldest_block() == 10u);
-    BOOST_TEST(n.block_count() == 1u);
+    BOOST_TEST(n.oldest_block() == 7u);
+    BOOST_TEST(n.block_count() == 4u);
   }
 }
 
@@ -153,7 +156,7 @@ BOOST_AUTO_TEST_CASE(FarBehindJoinsViaSnapshotThenBlocks) {
   c.run_to(10, 3);
   BOOST_TEST(c.nodes[3]->last_decided() == 2u);
   BOOST_TEST(c.nodes[0]->snapshot_height() == 9u);
-  BOOST_TEST(c.nodes[0]->oldest_block() == 10u);
+  BOOST_TEST(c.nodes[0]->oldest_block() == 7u);  // K=2: retained above the previous slot (6)
 
   c.join_far(3, 0);
   BOOST_TEST(c.nodes[3]->last_decided() == 10u);
@@ -204,6 +207,65 @@ BOOST_AUTO_TEST_CASE(NewMemberVotedInThenJoinsAndValidates) {
   for (int i = 0; i < 5; i++) {
     BOOST_TEST(c.nodes[i]->last_decided() == tip + 3);
     BOOST_TEST((c.nodes[i]->composite_hash() == c.nodes[0]->composite_hash()));
+  }
+}
+
+// Security regression: a malicious snapshot source must not be able to install a forged validator
+// set. The +1/+2 schedule is bound into the AppHash the attestations sign, so (1) the separate
+// next_set fields are ignored -- the joiner uses the schedule from the hashed governance -- and
+// (2) tampering the schedule inside the governance bytes fails the attestation quorum. Before the
+// fix, restore_snapshot trusted snapshot.next_set, so an attacker could hand a joiner its own key
+// as the height-S+1 validators and then forge every block after S onto a fork.
+BOOST_AUTO_TEST_CASE(ForgedSnapshotScheduleIsNotTrusted) {
+  std::vector<MockStateMachine> sm(4);
+  std::vector<StateMachine*> sms;
+  for (auto& s : sm) sms.push_back(&s);
+  LocalCluster c(sms, /*block_retention=*/1024, /*snapshot_interval=*/3);
+  c.run(9, 4);  // snapshot at height 9
+
+  Node& honest = *c.nodes[0];
+  BOOST_REQUIRE(honest.has_snapshot());
+  BOOST_TEST(honest.snapshot_height() == 9u);
+  const malachite::ValidatorSet real_next = honest.validators_for(10);
+
+  Snapshot snap = honest.stored_snapshot();
+  snap.attestations = {c.nodes[0]->attestation(), c.nodes[1]->attestation(),
+                       c.nodes[2]->attestation()};  // 3 of 4 = quorum over the real app_hash
+  const malachite::ValidatorSet trusted = c.vset;
+
+  KeyPair attacker = KeyPair::generate();
+  malachite::Validator av;
+  av.address = malachite::Bytes(attacker.pub.begin(), attacker.pub.end());
+  av.public_key = av.address;
+  av.voting_power = 1;
+  const malachite::ValidatorSet forged = {av};
+
+  // Attack 1: forge the separate next_set fields. Adopt still succeeds (real gov/app/attestations),
+  // but the joiner must end up with the REAL validator set, not the attacker's key.
+  {
+    Snapshot t = snap;
+    t.next_set = forged;
+    t.next_set2 = forged;
+    MockStateMachine jsm;
+    Node joiner(c.kps[0], c.vset, jsm, c.node_cfg());
+    BOOST_TEST(joiner.adopt_snapshot(t, trusted));
+    const malachite::ValidatorSet js = joiner.validators_for(10);
+    BOOST_TEST(js.size() == real_next.size());
+    bool has_attacker = false;
+    for (const auto& v : js)
+      if (v.public_key == av.public_key) has_attacker = true;
+    BOOST_TEST(!has_attacker);  // the forged next_set had no effect
+  }
+
+  // Attack 2: forge the schedule INSIDE the hashed governance bytes (corrupt a scheduled validator
+  // key). The recomputed AppHash now differs from the attested one, so the quorum fails.
+  {
+    Snapshot t = snap;
+    BOOST_REQUIRE(t.governance.size() > 40);
+    t.governance[t.governance.size() - 40] ^= 0xFF;
+    MockStateMachine jsm;
+    Node joiner(c.kps[0], c.vset, jsm, c.node_cfg());
+    BOOST_TEST(!joiner.adopt_snapshot(t, trusted));  // schedule is bound into the AppHash
   }
 }
 

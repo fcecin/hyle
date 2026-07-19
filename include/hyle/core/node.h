@@ -94,6 +94,26 @@ public:
   // raw restore without verification; prefer adopt_snapshot
   bool restore_snapshot(const Snapshot& s);
 
+  // Wire sync, split so it scales to gigabyte state (see core/snapshot.h). The core deals only in
+  // whole RAM artifacts; a transport moves the small checkpoint (pooled to a quorum) and streams
+  // the big state blob, and never chunks anything the core hands it.
+  //
+  // Serve side: the newest servable checkpoint, and the state blob for a given height. Two slots
+  // are kept (K=2 double buffer): the newest a fresh request adopts, plus the previous, so a peer
+  // that started a download before a fresh snapshot rotated in still finds its blob. Both hold
+  // through the wall-clock a transfer needs; a straggler that outlasts even the previous slot
+  // restarts. `state_blob_for` matches either slot by height. Spans are valid until the next
+  // snapshot rotates a slot; copy if held across a commit.
+  const SnapshotCheckpoint* servable_checkpoint() const;
+  bool state_blob_for(uint64_t height, wire::View& out_blob, Hash& out_hash) const;
+
+  // Request side: adopt a streamed state blob against a checkpoint whose attestation quorum the
+  // caller has already pooled and verified (checkpoint_has_quorum, core/snapshot.h). Re-verifies
+  // the quorum, then that hash(chain_id ++ gov ++ app) equals the checkpoint app_hash, then
+  // restores. Returns false without mutating on any mismatch.
+  bool adopt_state_blob(const SnapshotCheckpoint& c, wire::View state_blob,
+                        const malachite::ValidatorSet& trusted);
+
   size_t block_count() const { return blocks_.size(); }
   uint64_t oldest_block() const { return blocks_.empty() ? 0 : blocks_.begin()->first; }
   uint64_t newest_block() const { return blocks_.empty() ? 0 : blocks_.rbegin()->first; }
@@ -102,9 +122,11 @@ public:
     auto it = blocks_.find(h);
     return it == blocks_.end() ? nullptr : &it->second;
   }
-  bool has_snapshot() const { return has_snapshot_; }
-  uint64_t snapshot_height() const { return last_snapshot_height_; }
-  const Snapshot& stored_snapshot() const { return last_snapshot_; }
+  bool has_snapshot() const { return snap_cur_ >= 0 && snaps_[snap_cur_].valid; }
+  uint64_t snapshot_height() const { return has_snapshot() ? snaps_[snap_cur_].height : 0; }
+  // Reconstructs the newest snapshot from its slot (decodes the state blob). Convenience for
+  // in-process callers/tests; the wire path uses servable_checkpoint + state_blob_for.
+  Snapshot stored_snapshot() const;
 
   std::vector<std::pair<uint64_t, Block>> blocks_after(uint64_t from) const {
     std::vector<std::pair<uint64_t, Block>> out;
@@ -177,9 +199,20 @@ private:
   std::map<uint64_t, Block> blocks_;
   uint64_t block_retention_;
   uint64_t snapshot_interval_;
-  Snapshot last_snapshot_;
-  uint64_t last_snapshot_height_ = 0;
-  bool has_snapshot_ = false;
+
+  // K=2 snapshot double buffer. Each slot holds the small checkpoint plus the materialized state
+  // blob (gov ++ app) serialized once at capture, so serving is a span, not a re-serialize.
+  struct SnapSlot {
+    bool valid = false;
+    uint64_t height = 0;
+    SnapshotCheckpoint checkpoint;
+    wire::Bytes blob;
+    Hash blob_hash{};
+  };
+  SnapSlot snaps_[2];
+  int snap_cur_ = -1;  // newest valid slot; the other is the previous
+  void take_snapshot(uint64_t height);
+  uint64_t oldest_snapshot_height() const;
 
   bool want_propose_ = false;
   malachite::Height ph_ = 0;

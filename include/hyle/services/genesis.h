@@ -17,6 +17,15 @@ struct Genesis {
   std::vector<std::pair<PubKey, uint64_t>> allocations;
   Config config;
 
+  // Network-agreed defaults for the operational sync window: every node starts from the same sane
+  // baseline (a too-small window makes a node un-syncable). They ride the genesis but are NOT
+  // consensus -- they never enter the per-height AppHash, so a node may override them locally
+  // (NodeOptions) without forking. default_snapshot_interval is in blocks (0 = snapshots off; the
+  // chain then syncs from the block window alone); default_block_retention is that rolling window,
+  // used when snapshots are off.
+  uint64_t default_snapshot_interval = 0;
+  uint64_t default_block_retention = 1024;
+
   wire::Bytes canonical() const;
   Hash hash() const;
 
