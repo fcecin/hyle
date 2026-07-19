@@ -67,7 +67,11 @@ struct SimMeshPort : Transport {
 
 inline void SimMesh::deliver(const PubKey& to, const PubKey& from, MsgType type, wire::View payload,
                              const MsgId& id) {
-  if (!seen[to].insert(id)) { ++seen_drop; return; }
+  // Models the transport invariant: dedup never suppresses local delivery of consensus
+  // frames (liveness rebroadcasts are byte-identical); everything else delivers once.
+  const bool fresh = seen[to].insert(id);
+  const bool consensus = (type == MsgType::Consensus || type == MsgType::Prop);
+  if (!fresh && !consensus) { ++seen_drop; return; }
   ++delivered;
   auto pit = ports.find(to);
   if (pit != ports.end() && pit->second->on_recv) pit->second->on_recv(from, type, payload);

@@ -22,10 +22,10 @@ Hyle's surface against a CometBFT node + ABCI app. Each item is COVERED, OUTER (
 
 ## State sync
 
-- OfferSnapshot / ApplySnapshotChunk: snapshot store + `adopt_snapshot` / `restore_snapshot`. The snapshot is the complete consensus state (app + governance member set and in-flight vote tallies + the H+1 and H+2 validator sets). COVERED.
-- trust_height / trust_hash: the snapshot's `next_set` is the joiner's trusted checkpoint; forward verification by certificate. COVERED.
-- Snapshot chunking: a snapshot is served as one blob. GAP for large states.
-- Block sync: near-behind block replay via value-sync. COVERED.
+- OfferSnapshot / ApplySnapshotChunk: snapshot store + `adopt_snapshot` / `restore_snapshot`, served live over SnapReq/SnapResp by `hyle::services::Runtime`; each server includes its own attestation and the joiner pools them to a >2/3 quorum. The snapshot is the complete consensus state (app + governance member set and in-flight vote tallies + the H+1 and H+2 validator sets). COVERED.
+- trust_height / trust_hash: the joiner's current validator-set knowledge (genesis for a fresh joiner) is the trusted checkpoint the attestation quorum is verified against. COVERED.
+- Snapshot chunking: a snapshot is served as one blob and refused above the transport's `max_message`. GAP for large states.
+- Block sync: a behind node pulls retained blocks over ValueReq/ValueResp and replays them under certificate verification; a pruned tail falls back to snapshot sync. Driven by `Runtime` over any Transport. COVERED.
 
 ## Storage / pruning
 

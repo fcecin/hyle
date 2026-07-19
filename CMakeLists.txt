@@ -78,6 +78,7 @@ add_library(hyle_services STATIC
   # node machinery
   src/services/mempool.cpp
   src/services/runtime.cpp
+  src/services/sync.cpp
   # util
   src/services/keys.cpp
   src/services/keyring.cpp

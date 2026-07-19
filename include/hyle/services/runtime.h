@@ -4,11 +4,13 @@
 #include <hyle/core/node.h>
 #include <hyle/services/app.h>
 #include <hyle/services/genesis.h>
+#include <hyle/services/sync.h>
 #include <hyle/services/transport.h>
 
 #include <malachite/engine.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -28,6 +30,7 @@ struct NodeOptions {
   std::string data_dir;          // vote-WAL directory ("" = in-RAM, no crash recovery)
   std::string evidence_dir;      // equivocation-evidence directory ("" = discard evidence)
   std::size_t mempool_capacity = 8192;
+  uint64_t sync_retry_ms = 500;  // catch-up request retry pacing
 };
 
 class Runtime {
@@ -63,6 +66,13 @@ public:
   bool advance();
   void on_message(const PubKey& src, MsgType type, wire::View payload);
 
+  // Catch-up entry point. pump() already calls it; a shell may also call it per tick. When this
+  // node is behind the highest height observed from peers it requests the missing blocks
+  // (ValueReq/ValueResp, certificate-verified replay) and, when the tail is pruned at every peer,
+  // a snapshot (SnapReq/SnapResp, adopted on an attestation quorum). Paced by sync_retry_ms.
+  void request_sync();
+  uint64_t observed_height() const { return observed_head_; }
+
   void vote_add(const PubKey& target);
   void vote_remove(const PubKey& target);
   bool is_validator() const { return node_.is_member(key_.pub); }
@@ -73,6 +83,14 @@ public:
 private:
   void record_evidence(uint64_t height, int64_t round, const PubKey& proposer, const Hash& a,
                        const Hash& b);
+  void maybe_sync();
+  void send_blocks_req();
+  void send_snap_req();
+  void serve_blocks(const PubKey& src, wire::View payload);
+  void serve_snapshot(const PubKey& src, wire::View payload);
+  void handle_blocks_resp(const PubKey& src, wire::View payload);
+  void handle_snap_resp(wire::View payload);
+  bool replay_blocks(const std::vector<SyncBlock>& blocks);
   static malachite::ValidatorSet make_vset(const Genesis& g);
   static malachite::Config make_engine_cfg(const KeyPair& key, uint64_t h,
                                            const malachite::ValidatorSet& vs);
@@ -99,6 +117,18 @@ private:
   std::string evidence_dir_;
   size_t evidence_count_ = 0;
   std::map<uint64_t, std::map<std::string, Hash>> proposal_seen_;
+
+  // catch-up (wire sync)
+  uint64_t observed_head_ = 0;   // highest peer height evidenced by verified Props and responses
+  PubKey sync_peer_{};
+  bool have_sync_peer_ = false;
+  uint64_t sync_nonce_ = 0;
+  bool want_snapshot_ = false;
+  std::map<Hash, Snapshot> snap_cand_;   // by content key; attestations pooled per candidate
+  std::chrono::steady_clock::time_point last_sync_req_{};
+  uint64_t last_sync_applied_ = 0;
+  unsigned sync_stalls_ = 0;
+  uint64_t sync_retry_ms_;
 };
 
 } // namespace hyle::services

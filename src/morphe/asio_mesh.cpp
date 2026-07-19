@@ -54,6 +54,8 @@ size_t AsioMesh::connected() const {
   return c;
 }
 
+size_t AsioMesh::max_message() const { return MAX_PAYLOAD; }
+
 void AsioMesh::start() {
   do_accept();
   maintain();
@@ -203,13 +205,16 @@ void AsioMesh::on_frame(SessionPtr s, const FrameHeader& h, wire::View payload) 
 
   if (!(h.flags & FLAG_FORWARD) && !(h.src == s->peer)) return;
 
-  // Deliver-once: dedup every payload frame.
-  if (!seen_.insert(h.msg_id)) return;
-
+  // Dedup gates forwarding (loop control), never local delivery of consensus frames: the
+  // engine's liveness rebroadcasts are byte-identical and must reach a peer that lost its
+  // first copy (e.g. an engine rebuilt by catch-up). The engine dedups votes itself.
+  const bool fresh = seen_.insert(h.msg_id);
+  const bool consensus = (h.type == MsgType::Consensus || h.type == MsgType::Prop);
   if (h.dest == self_) {
-    if (on_recv) on_recv(h.src, h.type, payload);
+    if ((fresh || consensus) && on_recv) on_recv(h.src, h.type, payload);
     return;
   }
+  if (!fresh) return;
   if (h.hop_count >= MAX_HOP) return;
   auto it = sessions_.find(h.dest);
   if (it == sessions_.end() || !it->second->identified) return;

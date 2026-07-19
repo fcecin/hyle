@@ -37,6 +37,7 @@ public:
 
   size_t connected() const;
   size_t peer_count() const override { return connected(); }
+  size_t max_message() const override;
 
 private:
   struct Session : std::enable_shared_from_this<Session> {

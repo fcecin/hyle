@@ -29,6 +29,9 @@ struct Transport {
 
   virtual size_t peer_count() const { return 0; }
 
+  // Largest payload one send/broadcast can carry. Sync responses are sized to fit.
+  virtual size_t max_message() const { return SIZE_MAX; }
+
   // `payload` is valid only for the duration of the call.
   std::function<void(const PubKey& src, MsgType type, wire::View payload)> on_recv;
 };

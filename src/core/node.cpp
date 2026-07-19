@@ -512,7 +512,8 @@ void Node::decide(const malachite::Decision& d) {
       ++it;
   }
   if (applied && snapshot_interval_ > 0 && d.height % snapshot_interval_ == 0) {
-    last_snapshot_ = build_snapshot({});
+    // self-attested: served to joiners, which pool attestations from many peers into a quorum
+    last_snapshot_ = build_snapshot({last_att_});
     last_snapshot_height_ = d.height;
     has_snapshot_ = true;
     LOGINFO << "snapshot taken at height " << d.height;

@@ -73,6 +73,23 @@ Deliberate limits:
 - A snapshot at height S is servable only once block S+1 exists (S+1 carries AppHash(S)). Blocks flow continuously, so this is a sub-one-height window.
 - Weak subjectivity: a fresh joiner trusts the validator set it is handed (the snapshot's `next_set`) as its checkpoint, as every BFT joiner must. `adopt_snapshot` verifies a quorum of attestations against an out-of-band trusted set; `restore_snapshot` takes `next_set` as given and verifies forward by certificate. A forged `next_set` is defeated only by `adopt_snapshot`'s trusted checkpoint, as CometBFT state sync requires trust_hash/trust_height.
 
+## Wire catch-up
+
+Suite `WireSync` (`tests/test_wiresync.cpp`): the ValueReq/ValueResp + SnapReq/SnapResp protocol `hyle::services::Runtime` drives over any Transport.
+
+- Behind detection is evidence-based: a verified Prop ahead of the applied height, or a decide whose value never arrived.
+- A laggard pulls blocks batch by batch (responses sized to the transport's `max_message`) and rejoins live consensus; the regression then proves its vote carries a quorum.
+- A zero-state joiner on a pruned chain pools per-server attestations from SnapResp broadcasts until the >2/3 quorum adopts, then pulls the block tail; the regression then votes it in and proves the chain cannot commit without it.
+- Replay probes a fresh engine and swaps it in only after the first certificate verifies, so a forged response cannot reset or poison the live round.
+- Requests carry a nonce so transport dedup caches do not swallow retries.
+- A lying head claim decays after bounded stalled retries instead of wedging the node into eternal polling.
+- A rebuilt engine has lost every vote delivered before the rebuild; a transport whose dedup also gated local delivery would deadlock the stalled round (the joiner needs the old votes, the peers need the joiner's precommit, and every rebroadcast is byte-identical). Transports must re-deliver consensus frames; dedup gates only forwarding.
+
+Deliberate limits:
+
+- snapshot_interval 0 plus a passed retention window leaves nothing that can serve a zero-state joiner: enable snapshots or size retention for the chain's join window.
+- A snapshot larger than the transport's `max_message` is refused with a warning; bound state (genesis `max_state_bytes`) under the mesh frame limit.
+
 ## Adversarial input
 
 - A decoded list count cannot exceed the remaining bytes (`wire::Reader::count` self-validates), no decoder reserves on an untrusted count, and `verify()` / `restore_snapshot` reject a malformed key or snapshot rather than letting an exception escape.

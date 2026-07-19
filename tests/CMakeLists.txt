@@ -34,6 +34,7 @@ add_test(NAME embedtests COMMAND embedtests)
 add_executable(morphetests
   tests_main.cpp
   test_morphe.cpp
+  test_wiresync.cpp
 )
 target_link_libraries(morphetests PRIVATE
   hyle_morphe
