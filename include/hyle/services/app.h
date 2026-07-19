@@ -108,6 +108,7 @@ private:
   bool sudo_transfer(const TransferOp& o, uint64_t now);
   bool sudo_entry(const EntryOp& o, uint64_t now);
   void credit_dest(wire::View to, uint64_t amount, uint64_t now, const PubKey& owner_if_new);
+  bool at_state_cap_for_new_dest(wire::View to) const;
   // Per-block credit autofill over ctx.members. See config.h.
   void apply_autofill(const std::vector<PubKey>& members);
   Account load_account(const PubKey& k) const;

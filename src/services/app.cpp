@@ -68,6 +68,22 @@ bool App::valid_transfer_shape(const TransferOp& o) {
   return valid_transfer_dest(wire::View(o.to.data(), o.to.size()));
 }
 
+// True if max_state_bytes is set, the store is at/over it, and `to` names a cell that does not yet
+// exist -- i.e. admitting `to` would grow the state past a full cap.
+bool App::at_state_cap_for_new_dest(wire::View to) const {
+  if (cfg_.max_state_bytes == 0 || store_.bytes() < cfg_.max_state_bytes) return false;
+  if (to.empty()) return false;
+  if (to[0] == ACCOUNT_PREFIX) {
+    if (to.size() != 33) return false;
+    PubKey dest{};
+    std::memcpy(dest.data(), to.data() + 1, 32);
+    return !account_exists(dest);
+  }
+  if (to[0] == ENTRY_PREFIX)
+    return !entry_exists(wire::View(to.data() + 1, to.size() - 1));
+  return false;
+}
+
 bool App::apply_transfer(const TransferOp& o, uint64_t now) {
   if (!valid_transfer_shape(o)) return false;
   const wire::Bytes sb = xfer_sign_bytes(chain_v(), o.from, wire::View(o.to.data(), o.to.size()), o.amount, o.seq, o.max);
@@ -75,6 +91,9 @@ bool App::apply_transfer(const TransferOp& o, uint64_t now) {
   if (!account_exists(o.from)) return false;
   Account from = load_account(o.from);
   if (o.seq != from.sequence) return false;
+  // A full chain admits no new cells: reject a transfer whose destination account/entry does not
+  // yet exist. Checked before any mutation, so a rejected transfer moves nothing.
+  if (at_state_cap_for_new_dest(wire::View(o.to.data(), o.to.size()))) return false;
   uint64_t amount = o.amount;
   uint64_t cost = sat_add(amount, cfg_.fee_transfer);
   if (from.balance < cost) {
@@ -229,6 +248,8 @@ bool App::apply_entry(const EntryOp& o, uint64_t now) {
       e.last_modified = now;
       e.payload.assign(o.payload.begin(), o.payload.end());
     } else {
+      // Creating a new entry is new state: refuse it when the store is at the cap.
+      if (cfg_.max_state_bytes != 0 && store_.bytes() >= cfg_.max_state_bytes) return false;
       e = Entry{};
       e.owner = o.signer;
       e.balance = o.amount;

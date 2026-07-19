@@ -27,7 +27,7 @@ uint64_t parse_u64(const std::string& s) {
 } // namespace
 
 // A Config field left out of canonical() drops it from the genesis hash and can cause a fork.
-static_assert(sizeof(Config) == 88,
+static_assert(sizeof(Config) == 96,
               "Config changed: update genesis canonical()/parse()/to_text() and this size");
 
 wire::Bytes Genesis::canonical() const {
@@ -50,6 +50,7 @@ wire::Bytes Genesis::canonical() const {
   w.u64(config.member_cap);
   w.u64(config.member_floor);
   w.u64(config.max_value_bytes);
+  w.u64(config.max_state_bytes);
   w.u64(config.credit_autofill_ceiling);
   w.u64(config.refill_rate);
   w.count(vs.size());
@@ -131,6 +132,7 @@ Genesis Genesis::parse(const std::string& text) {
     else if (key == "member_cap") { need(a); g.config.member_cap = static_cast<unsigned>(parse_u64(a)); }
     else if (key == "member_floor") { need(a); g.config.member_floor = static_cast<unsigned>(parse_u64(a)); }
     else if (key == "max_value_bytes") { need(a); g.config.max_value_bytes = parse_u64(a); }
+    else if (key == "max_state_bytes") { need(a); g.config.max_state_bytes = parse_u64(a); }
     else if (key == "credit_autofill_ceiling") { need(a); g.config.credit_autofill_ceiling = parse_u64(a); }
     else if (key == "refill_rate") { need(a); g.config.refill_rate = parse_u64(a); }
     else throw std::runtime_error("genesis: line " + std::to_string(lineno) + ": unknown key '" + key + "'");
@@ -158,6 +160,7 @@ std::string Genesis::to_text() const {
   o << "member_cap " << config.member_cap << "\n";
   o << "member_floor " << config.member_floor << "\n";
   o << "max_value_bytes " << config.max_value_bytes << "\n";
+  o << "max_state_bytes " << config.max_state_bytes << "\n";
   o << "credit_autofill_ceiling " << config.credit_autofill_ceiling << "\n";
   o << "refill_rate " << config.refill_rate << "\n";
   for (const auto& v : vs) o << "validator " << hex_encode(v.data(), 32) << "\n";

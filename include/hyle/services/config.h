@@ -26,6 +26,12 @@ struct Config {
   unsigned member_floor = 1;
   uint64_t max_value_bytes = 4u << 20;
 
+  // Hard ceiling on total state RAM in bytes (sum of key+value over every cell). 0 = unbounded.
+  // A consensus rule: when the store is at or over this, an op that would create a NEW cell (a new
+  // entry or a new account) is rejected, so all nodes agree on which ops fail. Existing cells can
+  // still be updated and funded, and rip frees space.
+  uint64_t max_state_bytes = 0;
+
   // Per-block credit autofill over the validator set:
   // lift = credit_autofill_ceiling - max(validator balances); each validator
   // balance = min(ceiling, balance + lift + refill_rate). 0 ceiling disables.

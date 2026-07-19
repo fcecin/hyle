@@ -277,6 +277,55 @@ static uint64_t fund(services::App& app, const KeyPair& A, uint64_t /*height*/,
   return app.balance(A.pub);
 }
 
+// max_state_bytes caps total state: once full, a new entry or a transfer to a new account is
+// rejected, but updating an existing entry (not new state) still works.
+BOOST_AUTO_TEST_CASE(MaxStateBytesCapsNewCells) {
+  services::Config cfg;
+  cfg.fee_entry = 0;
+  cfg.fee_transfer = 0;
+  cfg.rent_rate = 0;
+  cfg.max_state_bytes = 300;
+  services::App app(cfg);
+  KeyPair A = KeyPair::generate();
+  app.seed_account(A.pub, 1'000'000);
+
+  // One big entry pushes the store past the cap.
+  const std::string big(400, 'x');
+  app.submit_entry(services::make_entry_put(A, sv("keep"), /*seq=*/0, /*fund=*/0, sv(big)));
+  apply_block(app, 1);
+  BOOST_TEST(app.entry_exists(sv("keep")));
+  BOOST_TEST(app.store().bytes() >= cfg.max_state_bytes);
+
+  // A new entry is refused while full; A's sequence does not advance on the rejected op.
+  app.submit_entry(services::make_entry_put(A, sv("newname"), /*seq=*/1, /*fund=*/0, sv("v")));
+  apply_block(app, 2);
+  BOOST_TEST(!app.entry_exists(sv("newname")));
+
+  // Updating an existing entry is not new state, so it still applies -- with another large payload
+  // so the store stays over the cap for the checks below.
+  const std::string big2(400, 'y');
+  app.submit_entry(services::make_entry_put(A, sv("keep"), /*seq=*/1, /*fund=*/0, sv(big2)));
+  apply_block(app, 3);
+  const wire::Bytes pl = app.entry_payload(sv("keep"));
+  BOOST_TEST(std::string(pl.begin(), pl.end()) == big2);
+  BOOST_TEST(app.store().bytes() >= cfg.max_state_bytes);
+
+  // A transfer to a brand-new account is refused while full.
+  KeyPair B = KeyPair::generate();
+  const wire::Bytes bkey = services::account_key(B.pub);
+  app.submit_transfer(services::make_transfer(A, kv_view(bkey), 10, /*seq=*/2));
+  apply_block(app, 4);
+  BOOST_TEST(!app.account_exists(B.pub));
+
+  // Deleting frees space; then a new entry fits again.
+  app.submit_entry(services::make_entry_del(A, sv("keep"), /*seq=*/2));
+  apply_block(app, 5);
+  BOOST_TEST(!app.entry_exists(sv("keep")));
+  app.submit_entry(services::make_entry_put(A, sv("after"), /*seq=*/3, /*fund=*/0, sv("ok")));
+  apply_block(app, 6);
+  BOOST_TEST(app.entry_exists(sv("after")));
+}
+
 BOOST_AUTO_TEST_CASE(EntryCreateHoldsOwnerBalancePayload) {
   services::App app;
   KeyPair A = KeyPair::generate();

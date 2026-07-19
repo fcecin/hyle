@@ -8,12 +8,25 @@ namespace hyle::services::kv {
 
 void State::apply(const Op& op) {
   switch (op.kind) {
-    case OpKind::Put:
-      kv_[op.key] = op.val;
+    case OpKind::Put: {
+      auto it = kv_.find(op.key);
+      if (it == kv_.end()) {
+        bytes_ += op.key.size() + op.val.size();
+        kv_.emplace(op.key, op.val);
+      } else {
+        bytes_ = bytes_ - it->second.size() + op.val.size();
+        it->second = op.val;
+      }
       break;
-    case OpKind::Del:
-      kv_.erase(op.key);
+    }
+    case OpKind::Del: {
+      auto it = kv_.find(op.key);
+      if (it != kv_.end()) {
+        bytes_ -= op.key.size() + it->second.size();
+        kv_.erase(it);
+      }
       break;
+    }
   }
 }
 
@@ -63,6 +76,8 @@ void State::restore(wire::View canonical) {
   }
   if (!r.empty()) throw wire::Error("state: trailing bytes after entries");
   kv_ = std::move(next);
+  bytes_ = 0;
+  for (const auto& e : kv_) bytes_ += e.first.size() + e.second.size();
 }
 
 Hash State::app_hash() const { return sha256(canonical()); }
