@@ -467,6 +467,11 @@ void Runtime::on_message(const PubKey& src, MsgType type, wire::View payload) {
     } catch (const wire::Error&) {
       return;
     }
+    // Rounds come off the wire. r must be a real round, and the proof-of-lock round vr must be nil
+    // (-1) or strictly below r. A crafted vr >= r would violate the consensus state machine's
+    // prevote-previous precondition (it asserts vr < proposal round) and abort the process. A signed
+    // but malformed Prop from a Byzantine proposer is dropped here, not fed to the engine.
+    if (r.value < 0 || vr.value < -1 || vr.value >= r.value) return;
 
     {
       const malachite::ValidatorSet vs = node_.validators_for(h == 0 ? 1 : h);
