@@ -506,11 +506,19 @@ void Runtime::on_message(const PubKey& src, MsgType type, wire::View payload) {
         proposal_seen_.erase(proposal_seen_.begin());
     }
 
-    bool ok = node_.accept_proposed(malachite::BytesView(value.data(), value.size()));
-    engine_->proposed_value(h, r, vr,
-                            malachite::BytesView(proposer.data(), proposer.size()),
-                            malachite::BytesView(value.data(), value.size()), ok,
-                            malachite::ValueOrigin::Consensus);
+    const ProposalCheck chk = node_.check_proposed(malachite::BytesView(value.data(), value.size()));
+    if (chk == ProposalCheck::Behind) {
+      // The value builds on committed state we do not have yet: we are behind. Do NOT feed it to the
+      // engine as Invalid -- a peer at head sees it as Valid and the network may decide it, and a
+      // decided value the engine holds as Invalid aborts at the decide step. Skip the vote; the Prop
+      // just advanced observed_head_ (above), so the periodic catch-up syncs the decided block while
+      // the engine prevotes nil by propose-timeout.
+    } else {
+      engine_->proposed_value(h, r, vr,
+                              malachite::BytesView(proposer.data(), proposer.size()),
+                              malachite::BytesView(value.data(), value.size()),
+                              chk == ProposalCheck::Valid, malachite::ValueOrigin::Consensus);
+    }
   }
 }
 

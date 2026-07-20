@@ -64,6 +64,24 @@ BOOST_AUTO_TEST_CASE(RejectsStaleParent) {
   BOOST_TEST(!node.accept_proposed(malachite::BytesView(v)));
 }
 
+// The fix for the decide-time abort: a stale-parent proposal is Behind (sync, do not vote), NOT
+// Invalid. Feeding Invalid for a value the network decides aborts malachite at the decide step. Only
+// deterministic defects (malformed, and the others) are Invalid.
+BOOST_AUTO_TEST_CASE(CheckProposedSeparatesBehindFromInvalid) {
+  std::vector<KeyPair> ks{KeyPair::generate(), KeyPair::generate(), KeyPair::generate(),
+                          KeyPair::generate()};
+  MockStateMachine sm;
+  Node node(ks[0], make_vset(ks), sm);
+  wire::Bytes ok = make_value(node.composite_hash(), {}, {});
+  BOOST_TEST((node.check_proposed(malachite::BytesView(ok)) == ProposalCheck::Valid));
+  Hash wrong{};
+  wrong[0] = 0xAB;  // well-formed, but built on committed state we do not have: behind, not invalid
+  wire::Bytes stale = make_value(wrong, {}, {});
+  BOOST_TEST((node.check_proposed(malachite::BytesView(stale)) == ProposalCheck::Behind));
+  wire::Bytes truncated{0x00, 0x01, 0x02};  // malformed: a deterministic Invalid
+  BOOST_TEST((node.check_proposed(malachite::BytesView(truncated)) == ProposalCheck::Invalid));
+}
+
 BOOST_AUTO_TEST_CASE(RejectsAppInvalidPayload) {
   std::vector<KeyPair> ks{KeyPair::generate(), KeyPair::generate(), KeyPair::generate(),
                           KeyPair::generate()};

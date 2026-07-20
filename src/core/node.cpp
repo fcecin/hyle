@@ -381,33 +381,40 @@ bool Node::verify(malachite::BytesView m, malachite::BytesView pk, malachite::By
 
 bool Node::validate(malachite::BytesView value) { return accept_proposed(value); }
 
-bool Node::accept_proposed(malachite::BytesView value) {
+ProposalCheck Node::check_proposed(malachite::BytesView value) {
   if (max_value_bytes_ > 0 && value.size > max_value_bytes_) {
     LOGDEBUG << "reject proposal: oversized value " << value.size << " > " << max_value_bytes_;
-    return false;
+    return ProposalCheck::Invalid;
   }
   cache_value(value);
   try {
     Envelope e = split_envelope(wv(value));
-    if (!(e.parent == composite_hash())) {  // must build on my committed state
-      LOGDEBUG << "reject proposal: stale parent (not built on committed state)";
-      return false;
+    if (!(e.parent == composite_hash())) {
+      // Builds on committed state we do not have: we are behind (or forked). Not a validity verdict
+      // -- a peer at the right height sees this same value as Valid and may decide it. We must sync,
+      // not vote it Invalid; a decided value the engine holds as Invalid aborts at the decide step.
+      LOGDEBUG << "defer proposal: stale parent (built on state we lack); will sync";
+      return ProposalCheck::Behind;
     }
     if (!validate_gov(e.gov)) {
       LOGDEBUG << "reject proposal: invalid governance op (non-member or bad signature)";
-      return false;
+      return ProposalCheck::Invalid;
     }
     if (!sm_.validate_payload(wire::View(e.payload))) {
       LOGDEBUG << "reject proposal: application rejected payload";
-      return false;
+      return ProposalCheck::Invalid;
     }
     LOGTRACE << "accept proposal: " << e.gov.size() << " gov ops, payload " << e.payload.size()
              << "B";
-    return true;
+    return ProposalCheck::Valid;
   } catch (const wire::Error& ex) {
     LOGDEBUG << "reject proposal: malformed envelope (" << ex.what() << ")";
-    return false;
+    return ProposalCheck::Invalid;
   }
+}
+
+bool Node::accept_proposed(malachite::BytesView value) {
+  return check_proposed(value) == ProposalCheck::Valid;
 }
 
 void Node::publish(PublishKind k, malachite::BytesView m) { outbox_.push_back(m.to_owned()); }

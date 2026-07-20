@@ -54,6 +54,13 @@ struct NodeConfig {
   std::string data_dir;
 };
 
+// An inbound proposal's verdict. Valid/Invalid are deterministic judgements every honest node agrees
+// on and feeds to the engine. Behind means the value builds on committed state this node does not
+// have yet (its parent AppHash is not our composite hash): the node cannot judge it and must SYNC,
+// never vote it Invalid -- if the network decides such a value, malachite's decide step asserts the
+// value was Valid and aborts the process.
+enum class ProposalCheck { Valid, Invalid, Behind };
+
 class Node : public malachite::Application {
 public:
   Node(KeyPair kp, malachite::ValidatorSet vset, StateMachine& sm, const NodeConfig& config = {});
@@ -150,7 +157,9 @@ public:
   malachite::Round restream_valid_round() const { return rs_vr_; }
   const wire::Bytes& restream_value_bytes() const { return rs_value_; }
   void clear_restream() { want_restream_ = false; }
-  bool accept_proposed(malachite::BytesView value);
+  // Behind means "we are not caught up enough to judge this"; the caller must sync, not vote it down.
+  ProposalCheck check_proposed(malachite::BytesView value);
+  bool accept_proposed(malachite::BytesView value);  // check_proposed(value) == Valid
   std::vector<malachite::Bytes> drain_outbox();
   const std::vector<Timer>& timers() const { return timers_; }
   Timer take_timer(size_t idx);
