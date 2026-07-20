@@ -2,14 +2,16 @@
 #define HYLE_SERVICES_BULK_H
 
 // The reusable bulk-transfer facility: it moves whole artifacts (a state blob, a block batch) over
-// a transport that provides only a reliable, ordered, per-message send -- exactly what TCP and the
-// CES RUDP stream both are. On send it splits the artifact into pieces the transport can carry and
-// paces them so a long transfer interleaves with consensus; on receive it reassembles the pieces
-// and hands back the whole artifact. It never retransmits or reorders -- the transport's stream
-// already guarantees delivery. Single-source, offset-addressed; no cross-source chunk reuse.
+// a transport that provides only a reliable, at-most-once, per-message send -- exactly what TCP and
+// the CES RUDP stream both are. On send it splits the artifact into pieces the transport can carry
+// and paces them so a long transfer interleaves with consensus; on receive it places each piece by
+// its offset and hands back the whole artifact once every byte has landed. It never retransmits --
+// delivery is the transport's job -- and never assumes order: a piece carries its own offset, so it
+// reassembles the same whichever lane it took. Single-source; no cross-source chunk reuse.
 //
 // A transport implementer never touches this: it moves BulkChunk messages like any other, and (if
 // it wants) routes Channel::Bulk onto a separate stream so bulk never head-of-line-blocks consensus.
+// Which stream a piece rides is invisible here: receipt is by offset, never by arrival order.
 
 #include <hyle/core/crypto.h>
 #include <hyle/core/wire.h>
@@ -46,9 +48,8 @@ public:
     BulkKind kind;
     wire::Bytes whole;
   };
-  // Feed one received BulkChunk payload. Returns the whole artifact when its last piece lands.
-  // Malformed input, an over-cap total, or an out-of-order piece drops the transfer and returns
-  // nullopt.
+  // Feed one received BulkChunk payload. Pieces may arrive in any order; returns the whole artifact
+  // once every byte has landed. Malformed input or an over-cap total returns nullopt.
   std::optional<Completed> receive(const PubKey& src, wire::View piece);
 
   // Reject any inbound transfer that declares more than this many bytes.

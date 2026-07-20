@@ -64,7 +64,6 @@ std::optional<BulkTransfer::Completed> BulkTransfer::receive(const PubKey& src, 
   const std::pair<PubKey, uint64_t> key{src, id};
   auto it = in_.find(key);
   if (it == in_.end()) {
-    if (offset != 0) return std::nullopt;  // must start at the beginning
     In in;
     in.kind = static_cast<BulkKind>(kind);
     in.total = total;
@@ -73,10 +72,11 @@ std::optional<BulkTransfer::Completed> BulkTransfer::receive(const PubKey& src, 
     it = in_.emplace(key, std::move(in)).first;
   }
   In& in = it->second;
-  if (in.total != total || in.kind != static_cast<BulkKind>(kind) || offset != in.got) {
-    in_.erase(it);  // reliable ordered transport should not produce this; drop the transfer
+  if (in.total != total || in.kind != static_cast<BulkKind>(kind)) {
+    in_.erase(it);  // pieces of one transfer must agree on total and kind; a mismatch is corruption
     return std::nullopt;
   }
+  // Placed by its own offset, so pieces may land in any order (e.g. split across two QoS lanes).
   if (len) std::memcpy(in.buf.data() + offset, body.data(), len);
   in.got += len;
   if (in.got < in.total) return std::nullopt;

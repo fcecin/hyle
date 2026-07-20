@@ -1295,18 +1295,21 @@ BOOST_AUTO_TEST_SUITE(MorpheLifecycle)
 
 static services::Genesis life_g(int n) { return morphe::mesh_genesis(morphe::mesh_keys(n)); }
 
-// Encode a signed Prop: [u64 h][u64 round][proposer:32][bytes value][sig:64]. claimed is the
-// proposer field; signer is who actually signs.
+// Encode a signed Prop: [u64 h][u64 round][u64 valid_round][proposer:32][bytes value][sig:64].
+// claimed is the proposer field; signer is who actually signs. valid_round is nil here (evidence
+// tests do not exercise the proof-of-lock round).
 static wire::Bytes make_prop_as(uint64_t h, int64_t round, const PubKey& claimed, const KeyPair& signer,
                                 const char* value, const std::string& chain_id = "morphe-mesh") {
   wire::View vv = sv(value);
-  wire::Bytes sb;  // sign bytes: "MORPHE_PROP_V1" || chain_id || h || round || sha256(value)
+  const int64_t valid_round = -1;
+  wire::Bytes sb;  // sign bytes: "MORPHE_PROP_V2" || chain_id || h || round || valid_round || sha256(value)
   {
     wire::Writer sw(sb);
-    sw.raw(wire::View(reinterpret_cast<const uint8_t*>("MORPHE_PROP_V1"), 14));
+    sw.raw(wire::View(reinterpret_cast<const uint8_t*>("MORPHE_PROP_V2"), 14));
     sw.bytes(sv(chain_id));
     sw.u64(h);
     sw.u64(static_cast<uint64_t>(round));
+    sw.u64(static_cast<uint64_t>(valid_round));
     Hash vh = sha256(vv);
     sw.raw(wire::View(vh.data(), vh.size()));
   }
@@ -1315,6 +1318,7 @@ static wire::Bytes make_prop_as(uint64_t h, int64_t round, const PubKey& claimed
   wire::Writer w(out);
   w.u64(h);
   w.u64(static_cast<uint64_t>(round));
+  w.u64(static_cast<uint64_t>(valid_round));
   w.raw(wire::View(claimed.data(), claimed.size()));
   w.bytes(vv);
   w.raw(wire::View(sig.data(), sig.size()));

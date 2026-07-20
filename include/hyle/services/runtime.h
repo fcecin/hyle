@@ -134,6 +134,12 @@ private:
   uint64_t last_sync_applied_ = 0;
   unsigned sync_stalls_ = 0;
   uint64_t sync_retry_ms_;
+  // Stuck-probe: when our own applied height stops advancing while consensus runs, we may be a
+  // validator stuck at a height a quorum already decided without us (its certificate is gone and the
+  // chain cannot advance to re-reveal it). Broadcast a checkpoint request to discover the real head.
+  uint64_t probe_applied_ = 0;
+  std::chrono::steady_clock::time_point probe_applied_at_{};
+  std::chrono::steady_clock::time_point probe_last_{};
 };
 
 } // namespace hyle::services

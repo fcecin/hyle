@@ -140,6 +140,36 @@ BOOST_AUTO_TEST_CASE(BulkTransferReassemblesWholeArtifact) {
   BOOST_TEST(!rx2.receive(src, wire::View(junk.data(), junk.size())).has_value());
 }
 
+// A piece carries its own offset, so the lane it rides and the order it lands in must not change the
+// result: the very same pieces fed back to front still reassemble byte-for-byte. This is what lets a
+// two-channel transport split one transfer across a control and a bulk stream (the small tail piece
+// routes by size onto the control lane and can overtake the body on the bulk lane).
+BOOST_AUTO_TEST_CASE(BulkTransferReassemblesPiecesInAnyOrder) {
+  BulkTransfer tx;
+  PubKey dst{}; dst.fill(0xD0);
+  PubKey src{}; src.fill(0x5C);
+
+  wire::Bytes artifact;
+  for (size_t i = 0; i < 5000; ++i) artifact.push_back(static_cast<uint8_t>(i * 11 + 1));
+  tx.enqueue(dst, BulkKind::Blocks, wire::View(artifact.data(), artifact.size()));
+
+  std::vector<wire::Bytes> pieces;
+  int guard = 0;
+  while (tx.sending() && guard++ < 100000)
+    tx.pump(1, /*piece_bytes=*/1000, [&](const PubKey&, wire::View piece) {
+      pieces.emplace_back(piece.begin(), piece.end());
+    });
+  BOOST_REQUIRE(pieces.size() > 3u);  // several pieces, so the reversal actually reorders
+
+  BulkTransfer rx;
+  std::optional<BulkTransfer::Completed> done;
+  for (auto it = pieces.rbegin(); it != pieces.rend(); ++it)
+    if (auto d = rx.receive(src, wire::View(it->data(), it->size()))) done = std::move(d);
+  BOOST_REQUIRE(done.has_value());
+  BOOST_TEST((done->kind == BulkKind::Blocks));
+  BOOST_TEST(done->whole == artifact);
+}
+
 // The postmortem's stranded-laggard defect: a validator that missed commits must return to head
 // over the wire and then be a working validator (its vote necessary for quorum).
 BOOST_AUTO_TEST_CASE(LaggardRejoinsOverWireAndValidates) {
@@ -470,6 +500,159 @@ BOOST_AUTO_TEST_CASE(JoinerSyncsOverAsioTcp) {
   BOOST_REQUIRE(drive_tcp(all, [&] { return converged(all, goal); }, 40000));
   const Hash ref = rts[0]->node().composite_hash();
   for (auto* rt : all) BOOST_TEST((rt->node().composite_hash() == ref));
+}
+
+// The membership-add participation race isolated to the core over real async TCP: a zero-state node
+// joins, syncs to head, is voted in, and then -- with an original silenced so its vote is NECESSARY
+// (quorum 4 of 5) -- the chain must keep committing. This is the CES NetMembershipAdd scenario minus
+// the CES transport: single-channel AsioMesh. A stall here is a hyle bug; rock-solid points the
+// finger at the richer transport above. One join-and-validate per run; loop the binary to sample it.
+BOOST_AUTO_TEST_CASE(JoinerValidatesOverAsioTcp) {
+  boost::asio::io_context io;
+  auto kps = morphe::mesh_keys(5);
+  std::vector<KeyPair> genesis_kps(kps.begin(), kps.begin() + 4);
+  Genesis g = morphe::mesh_genesis(genesis_kps);
+
+  std::vector<std::unique_ptr<morphe::AsioMesh>> mesh;
+  for (int i = 0; i < 5; i++)
+    mesh.push_back(std::make_unique<morphe::AsioMesh>(io, kps[i], /*chain_tag=*/11, /*port=*/0));
+  std::vector<std::unique_ptr<Runtime>> rts;
+  for (int i = 0; i < 5; i++)
+    rts.push_back(std::make_unique<Runtime>(g, kps[i], sync_opts(/*snapshot_interval=*/3), mesh[i].get()));
+
+  auto drive_tcp = [&](std::vector<Runtime*> active, std::function<bool()> done, int max_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(max_ms);
+    int idle = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (done()) return true;
+      bool prog = false;
+      for (auto* rt : active) if (rt->pump()) prog = true;
+      for (auto* rt : active) if (rt->advance()) prog = true;
+      io.run_for(std::chrono::milliseconds(2));
+      if (!prog) { if (++idle > 40) { for (auto* rt : active) rt->fire_one_timeout(); idle = 0; } }
+      else idle = 0;
+    }
+    return done();
+  };
+
+  // 4 validators mesh over TCP and advance past a snapshot with a pruned genesis tail.
+  for (int i = 0; i < 4; i++)
+    for (int j = 0; j < 4; j++)
+      if (i != j) mesh[i]->add_peer(kps[j].pub, "127.0.0.1", mesh[j]->port());
+  for (int i = 0; i < 4; i++) mesh[i]->start();
+  for (int i = 0; i < 4; i++) rts[i]->begin();
+  std::vector<Runtime*> vals{rts[0].get(), rts[1].get(), rts[2].get(), rts[3].get()};
+  BOOST_REQUIRE(drive_tcp(vals, [&] { return converged(vals, 10); }, 40000));
+  BOOST_TEST(rts[0]->node().oldest_block() > 1u);
+
+  // the joiner meshes and syncs to head over real sockets.
+  for (int i = 0; i < 4; i++) {
+    mesh[4]->add_peer(kps[i].pub, "127.0.0.1", mesh[i]->port());
+    mesh[i]->add_peer(kps[4].pub, "127.0.0.1", mesh[4]->port());
+  }
+  mesh[4]->start();
+  rts[4]->begin();
+  std::vector<Runtime*> allrt{rts[0].get(), rts[1].get(), rts[2].get(), rts[3].get(), rts[4].get()};
+  BOOST_REQUIRE(drive_tcp(allrt, [&] { return rts[4]->height() >= 12 && converged(allrt, 12); }, 40000));
+  BOOST_TEST(!rts[4]->is_validator());
+
+  // vote it in; all four originals vote (governance quorum 3 of 4).
+  for (int i = 0; i < 4; i++) rts[i]->vote_add(kps[4].pub);
+  BOOST_REQUIRE(drive_tcp(allrt, [&] {
+    for (auto* rt : allrt) if (rt->node().member_count() != 5) return false;
+    return true;
+  }, 40000));
+  BOOST_TEST(rts[4]->is_validator());
+  // past the +2 schedule the joiner's power is live.
+  const uint64_t sched_goal = rts[0]->height() + 3;
+  BOOST_REQUIRE(drive_tcp(allrt, [&] { return converged(allrt, sched_goal); }, 40000));
+
+  // silence an original by ceasing to drive it: quorum is 4 of 5, so {1,2,3,4} commits ONLY if the
+  // freshly-synced joiner actively votes. A stall here is the bug the CES suite hits intermittently.
+  std::vector<Runtime*> live{rts[1].get(), rts[2].get(), rts[3].get(), rts[4].get()};
+  const uint64_t before = rts[1]->height();
+  const bool committed = drive_tcp(live, [&] { return converged(live, before + 2); }, 40000);
+  BOOST_REQUIRE_MESSAGE(committed, "chain stalled with the synced joiner required for quorum");
+  const Hash ref = rts[1]->node().composite_hash();
+  for (auto* rt : live) BOOST_TEST((rt->node().composite_hash() == ref));
+}
+
+// Bug 2 scale probe. The n=5 membership-activation wedge (a validator behind at the joiner's +2
+// activation, when quorum steps up) might be a fault-tolerance-edge limitation rather than a bug. This
+// runs the same join-and-activate scenario at larger node counts, which have genuine slack (n=7,8,9 are
+// f=2). If the +2 convergence still wedges there -- even once -- the mechanism cascades past f nodes and
+// it is a real bug, not merely running out of caught-up validators. Returns whether all N converged past
+// the +2 window; the earlier steps are hard requirements.
+static bool joiner_activation_converges(int genesis_count) {
+  boost::asio::io_context io;
+  const int G = genesis_count;
+  const int N = G + 1;  // G genesis validators + one joiner
+  auto kps = morphe::mesh_keys(N);
+  std::vector<KeyPair> genesis_kps(kps.begin(), kps.begin() + G);
+  Genesis g = morphe::mesh_genesis(genesis_kps);
+
+  std::vector<std::unique_ptr<morphe::AsioMesh>> mesh;
+  for (int i = 0; i < N; i++)
+    mesh.push_back(std::make_unique<morphe::AsioMesh>(io, kps[i], /*chain_tag=*/13, /*port=*/0));
+  std::vector<std::unique_ptr<Runtime>> rts;
+  for (int i = 0; i < N; i++)
+    rts.push_back(std::make_unique<Runtime>(g, kps[i], sync_opts(/*snapshot_interval=*/3), mesh[i].get()));
+
+  auto drive_tcp = [&](std::vector<Runtime*> active, std::function<bool()> done, int max_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(max_ms);
+    int idle = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (done()) return true;
+      bool prog = false;
+      for (auto* rt : active) if (rt->pump()) prog = true;
+      for (auto* rt : active) if (rt->advance()) prog = true;
+      io.run_for(std::chrono::milliseconds(2));
+      if (!prog) { if (++idle > 40) { for (auto* rt : active) rt->fire_one_timeout(); idle = 0; } }
+      else idle = 0;
+    }
+    return done();
+  };
+
+  for (int i = 0; i < G; i++)
+    for (int j = 0; j < G; j++)
+      if (i != j) mesh[i]->add_peer(kps[j].pub, "127.0.0.1", mesh[j]->port());
+  for (int i = 0; i < G; i++) mesh[i]->start();
+  for (int i = 0; i < G; i++) rts[i]->begin();
+  std::vector<Runtime*> vals;
+  for (int i = 0; i < G; i++) vals.push_back(rts[i].get());
+  BOOST_REQUIRE(drive_tcp(vals, [&] { return converged(vals, 10); }, 60000));
+
+  for (int i = 0; i < G; i++) {
+    mesh[G]->add_peer(kps[i].pub, "127.0.0.1", mesh[i]->port());
+    mesh[i]->add_peer(kps[G].pub, "127.0.0.1", mesh[G]->port());
+  }
+  mesh[G]->start();
+  rts[G]->begin();
+  std::vector<Runtime*> all;
+  for (int i = 0; i < N; i++) all.push_back(rts[i].get());
+  BOOST_REQUIRE(drive_tcp(all, [&] { return rts[G]->height() >= 12 && converged(all, 12); }, 60000));
+
+  for (int i = 0; i < G; i++) rts[i]->vote_add(kps[G].pub);
+  BOOST_REQUIRE(drive_tcp(all, [&] {
+    for (auto* rt : all) if (static_cast<int>(rt->node().member_count()) != N) return false;
+    return true;
+  }, 60000));
+
+  const uint64_t sched_goal = rts[0]->height() + 3;
+  return drive_tcp(all, [&] { return converged(all, sched_goal); }, 60000);
+}
+
+BOOST_AUTO_TEST_CASE(JoinerActivatesN5) {
+  BOOST_REQUIRE_MESSAGE(joiner_activation_converges(4), "n=5 wedged at the joiner's +2 activation");
+}
+BOOST_AUTO_TEST_CASE(JoinerActivatesN7) {
+  BOOST_REQUIRE_MESSAGE(joiner_activation_converges(6), "n=7 wedged at the joiner's +2 activation");
+}
+BOOST_AUTO_TEST_CASE(JoinerActivatesN8) {
+  BOOST_REQUIRE_MESSAGE(joiner_activation_converges(7), "n=8 wedged at the joiner's +2 activation");
+}
+BOOST_AUTO_TEST_CASE(JoinerActivatesN9) {
+  BOOST_REQUIRE_MESSAGE(joiner_activation_converges(8), "n=9 wedged at the joiner's +2 activation");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -410,7 +410,7 @@ bool Node::accept_proposed(malachite::BytesView value) {
   }
 }
 
-void Node::publish(PublishKind, malachite::BytesView m) { outbox_.push_back(m.to_owned()); }
+void Node::publish(PublishKind k, malachite::BytesView m) { outbox_.push_back(m.to_owned()); }
 
 void Node::schedule_timeout(malachite::Timeout t, uint64_t dur) {
   timers_.push_back(Timer{t.kind, t.round.value, dur});
@@ -463,6 +463,25 @@ void Node::get_value(malachite::Height h, malachite::Round r, uint64_t) {
   ph_ = h;
   pr_ = r;
   want_propose_ = true;
+}
+
+// The engine asks us (the round proposer) to re-offer an already-known value -- our locked/valid
+// value -- at round r, advertising its proof-of-lock round. We hold the bytes in the value cache
+// (keyed by the value's hash); stage them for the Runtime to broadcast. If we do not hold the value
+// we cannot re-propose it (should not happen once we have prevoted it), so drop the request.
+void Node::restream_proposal(malachite::Height h, malachite::Round r, malachite::Round valid_round,
+                             malachite::BytesView, malachite::BytesView value_id) {
+  if (value_id.size != 32) return;
+  Hash vid{};
+  std::memcpy(vid.data(), value_id.data, 32);
+  auto it = value_cache_.find(vid);
+  if (it == value_cache_.end()) return;  // we do not hold this value's bytes; a later proposer carries it
+  rs_h_ = h;
+  rs_r_ = r;
+  rs_vr_ = valid_round;
+  rs_value_ = it->second;
+  want_restream_ = true;
+  LOGDEBUG << "restream height " << h << " round " << r.value << " valid_round " << valid_round.value;
 }
 
 void Node::decide(const malachite::Decision& d) {

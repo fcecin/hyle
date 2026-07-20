@@ -68,8 +68,8 @@ public:
   void cancel_all_timeouts() override;
   void reset_timeouts() override;
   void get_value(malachite::Height h, malachite::Round r, uint64_t timeout_ms) override;
-  void restream_proposal(malachite::Height, malachite::Round, malachite::Round,
-                         malachite::BytesView, malachite::BytesView) override {}
+  void restream_proposal(malachite::Height h, malachite::Round r, malachite::Round valid_round,
+                         malachite::BytesView proposer, malachite::BytesView value_id) override;
   void start_round(malachite::Height, malachite::Round, malachite::BytesView,
                    malachite::Role) override;
   void decide(const malachite::Decision& d) override;
@@ -141,6 +141,15 @@ public:
   malachite::Round proposal_round() const { return pr_; }
   malachite::BytesView proposal_value() const { return malachite::BytesView(pending_value_); }
   void clear_proposal() { want_propose_ = false; }
+  // Re-proposal handoff (Tendermint proof-of-lock): when the engine asks us to re-offer a known
+  // value at a higher round, restream_proposal stages it here and the Runtime broadcasts the Prop
+  // advertising restream_valid_round().
+  bool wants_restream() const { return want_restream_; }
+  malachite::Height restream_height() const { return rs_h_; }
+  malachite::Round restream_round() const { return rs_r_; }
+  malachite::Round restream_valid_round() const { return rs_vr_; }
+  const wire::Bytes& restream_value_bytes() const { return rs_value_; }
+  void clear_restream() { want_restream_ = false; }
   bool accept_proposed(malachite::BytesView value);
   std::vector<malachite::Bytes> drain_outbox();
   const std::vector<Timer>& timers() const { return timers_; }
@@ -218,6 +227,11 @@ private:
   malachite::Height ph_ = 0;
   malachite::Round pr_;
   wire::Bytes pending_value_;
+  bool want_restream_ = false;
+  malachite::Height rs_h_ = 0;
+  malachite::Round rs_r_{0};
+  malachite::Round rs_vr_{-1};
+  wire::Bytes rs_value_;
 
   std::vector<malachite::Bytes> outbox_;
   std::vector<Timer> timers_;

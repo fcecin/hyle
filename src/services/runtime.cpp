@@ -74,30 +74,34 @@ Runtime::Runtime(const Genesis& g, const KeyPair& key, NodeOptions opts, Transpo
     };
 }
 
-// tag || height || round || sha256(value).
+
 static wire::Bytes prop_sign_bytes(wire::View chain_id, malachite::Height h, int64_t round,
-                                   wire::View value) {
+                                   int64_t valid_round, wire::View value) {
   wire::Bytes out;
   wire::Writer w(out);
-  w.str("MORPHE_PROP_V1");
+  w.str("MORPHE_PROP_V2");  // V2: signed bytes now bind the proof-of-lock (valid) round
   w.bytes(chain_id);
   w.u64(h);
   w.u64(static_cast<uint64_t>(round));
+  w.u64(static_cast<uint64_t>(valid_round));
   const Hash vh = sha256(value);
   w.raw(wire::View(vh.data(), vh.size()));
   return out;
 }
 
-// [u64 height][u64 round][proposer:32][bytes value][sig:64].
+// [u64 height][u64 round][u64 valid_round][proposer:32][bytes value][sig:64]. valid_round is the
+// proof-of-lock round: nil (-1, cast to u64) for a fresh proposal, the lock round for a re-proposal.
 static wire::Bytes encode_prop(wire::View chain_id, malachite::Height h, malachite::Round r,
-                               const KeyPair& key, malachite::BytesView value) {
+                               malachite::Round valid_round, const KeyPair& key,
+                               malachite::BytesView value) {
   const wire::View vv(value.data, value.size);
-  const wire::Bytes sb = prop_sign_bytes(chain_id, h, r.value, vv);
+  const wire::Bytes sb = prop_sign_bytes(chain_id, h, r.value, valid_round.value, vv);
   const Sig sig = key.sign(wire::View(sb.data(), sb.size()));
   wire::Bytes out;
   wire::Writer w(out);
   w.u64(h);
   w.u64(static_cast<uint64_t>(r.value));
+  w.u64(static_cast<uint64_t>(valid_round.value));
   w.raw(wire::View(key.pub.data(), key.pub.size()));
   w.bytes(vv);
   w.raw(wire::View(sig.data(), sig.size()));
@@ -180,13 +184,36 @@ void Runtime::maybe_sync() {
   // A decide the value never arrived for is behind-ness evidence with no Prop attached.
   if (node_.last_decided() > observed_head_) observed_head_ = node_.last_decided();
   const uint64_t applied = node_.applied_height();
+  const auto now = std::chrono::steady_clock::now();
+  if (applied != probe_applied_) {
+    probe_applied_ = applied;
+    probe_applied_at_ = now;
+  }
   if (observed_head_ <= applied) {
     ckpt_cand_.clear();
     have_quorum_ckpt_ = false;
     sync_stalls_ = 0;
+    // Proactive stuck-probe: if our own applied height has been frozen for longer than a few block
+    // paces while consensus runs, we may be stuck at a height a quorum decided without us -- its
+    // certificate is gone and the wedged chain cannot advance to re-reveal it, so observed_head_
+    // never rises and the reactive path above never fires. Ask peers directly. The block request is
+    // the near-behind recovery: a peer serves the decided tail and we replay it, no snapshot needed.
+    // The checkpoint request covers the far-behind case (tail pruned everywhere) by advancing
+    // observed_head_ to the newest snapshot boundary. Harmless when actually at head.
+    uint64_t stuck_ms = 3 * pace_ms_;
+    if (stuck_ms < 300) stuck_ms = 300;
+    if (now - probe_applied_at_ > std::chrono::milliseconds(stuck_ms) &&
+        (probe_last_.time_since_epoch().count() == 0 ||
+         now - probe_last_ > std::chrono::milliseconds(sync_retry_ms_))) {
+      probe_last_ = now;
+      have_sync_peer_ = false;  // we do not know who holds the head; broadcast the probe
+      CheckpointReq creq{applied, ++sync_nonce_};
+      wire::Bytes cb = encode_checkpoint_req(creq);
+      net_->broadcast(MsgType::SnapReq, Channel::Bulk, wire::View(cb.data(), cb.size()));
+      send_blob_req(1 /*blocks*/, applied);
+    }
     return;
   }
-  const auto now = std::chrono::steady_clock::now();
   const bool first = last_sync_req_.time_since_epoch().count() == 0;
   if (!first && now - last_sync_req_ < std::chrono::milliseconds(sync_retry_ms_)) return;
   if (!first && applied == last_sync_applied_) {
@@ -421,6 +448,7 @@ void Runtime::on_message(const PubKey& src, MsgType type, wire::View payload) {
   if (type == MsgType::Prop) {
     malachite::Height h;
     malachite::Round r{0};
+    malachite::Round vr{-1};  // proof-of-lock (valid) round; nil (-1) for a fresh proposal
     PubKey proposer{};
     wire::Bytes value;
     Sig sig{};
@@ -428,6 +456,7 @@ void Runtime::on_message(const PubKey& src, MsgType type, wire::View payload) {
       wire::Reader rd(payload);
       h = rd.u64();
       r = malachite::Round{static_cast<int64_t>(rd.u64())};
+      vr = malachite::Round{static_cast<int64_t>(rd.u64())};
       wire::View prop = rd.raw(32);
       std::copy(prop.begin(), prop.end(), proposer.begin());
       wire::View val = rd.bytes();
@@ -448,7 +477,8 @@ void Runtime::on_message(const PubKey& src, MsgType type, wire::View payload) {
       if (!is_val) return;
     }
 
-    const wire::Bytes sb = prop_sign_bytes(chain_v(), h, r.value, wire::View(value.data(), value.size()));
+    const wire::Bytes sb =
+        prop_sign_bytes(chain_v(), h, r.value, vr.value, wire::View(value.data(), value.size()));
     if (!verify(proposer, wire::View(sb.data(), sb.size()), sig)) return;
 
     // A verified Prop at h evidences a chain at h-1: the behind detector and the peer to ask.
@@ -477,7 +507,7 @@ void Runtime::on_message(const PubKey& src, MsgType type, wire::View payload) {
     }
 
     bool ok = node_.accept_proposed(malachite::BytesView(value.data(), value.size()));
-    engine_->proposed_value(h, r, malachite::Round::nil(),
+    engine_->proposed_value(h, r, vr,
                             malachite::BytesView(proposer.data(), proposer.size()),
                             malachite::BytesView(value.data(), value.size()), ok,
                             malachite::ValueOrigin::Consensus);
@@ -493,7 +523,25 @@ bool Runtime::pump() {
     node_.clear_proposal();
     engine_->propose(h, r, malachite::BytesView(val));
     if (net_) {
-      wire::Bytes p = encode_prop(chain_v(), h, r, key_, malachite::BytesView(val));
+      wire::Bytes p = encode_prop(chain_v(), h, r, malachite::Round::nil(), key_,
+                                  malachite::BytesView(val));
+      net_->broadcast(MsgType::Prop, Channel::Consensus, wire::View(p.data(), p.size()));
+    }
+    progress = true;
+  }
+  // Re-proposal (Tendermint liveness): the engine asks us, the round proposer, to re-offer a value we
+  // already hold -- the locked/valid value -- at this round, advertising its proof-of-lock round.
+  // Without this, a height that fails round 0 with validators locked never commits. Value bytes come
+  // from the value cache (populated when we proposed or accepted it).
+  if (node_.wants_restream()) {
+    const malachite::Height h = node_.restream_height();
+    const malachite::Round r = node_.restream_round();
+    const malachite::Round vr = node_.restream_valid_round();
+    const wire::Bytes val = node_.restream_value_bytes();
+    node_.clear_restream();
+    if (net_) {
+      wire::Bytes p =
+          encode_prop(chain_v(), h, r, vr, key_, malachite::BytesView(val.data(), val.size()));
       net_->broadcast(MsgType::Prop, Channel::Consensus, wire::View(p.data(), p.size()));
     }
     progress = true;
