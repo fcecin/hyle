@@ -31,8 +31,10 @@ class BulkTransfer {
 public:
   // Piece wire form: [u64 id][u8 kind][u64 total][u64 offset][u32 len][len bytes].
   static constexpr size_t kPieceHeader = 8 + 1 + 8 + 8 + 4;
+  static constexpr size_t kMaxInboundPerSource = 4;
 
-  // Queue a whole artifact to `dest`. `whole` is copied; the caller's buffer need not persist.
+  // Queue a whole artifact to `dest`. `whole` is copied; the caller's buffer need not persist. It
+  // replaces a queued artifact of the same kind to the same `dest` that has not started to send.
   void enqueue(const PubKey& dest, BulkKind kind, wire::View whole);
   bool sending() const { return !out_.empty(); }
   size_t outbound() const { return out_.size(); }
@@ -49,7 +51,8 @@ public:
     wire::Bytes whole;
   };
   // Feed one received BulkChunk payload. Pieces may arrive in any order; returns the whole artifact
-  // once every byte has landed. Malformed input or an over-cap total returns nullopt.
+  // once every byte has landed. Malformed input or an over-cap total returns nullopt. Only the bytes
+  // that arrived are held, and a source keeps at most kMaxInboundPerSource transfers open.
   std::optional<Completed> receive(const PubKey& src, wire::View piece);
 
   // Reject any inbound transfer that declares more than this many bytes.
@@ -67,7 +70,7 @@ private:
     BulkKind kind = BulkKind::StateBlob;
     uint64_t total = 0;
     uint64_t got = 0;
-    wire::Bytes buf;
+    std::map<uint64_t, wire::Bytes> pieces;
   };
 
   std::deque<Out> out_;

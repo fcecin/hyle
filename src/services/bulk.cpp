@@ -1,11 +1,16 @@
 #include <hyle/services/bulk.h>
 
 #include <algorithm>
-#include <cstring>
+#include <iterator>
 
 namespace hyle::services {
 
 void BulkTransfer::enqueue(const PubKey& dest, BulkKind kind, wire::View whole) {
+  for (auto& q : out_)
+    if (q.offset == 0 && q.kind == kind && q.dest == dest) {
+      q.whole.assign(whole.begin(), whole.end());
+      return;
+    }
   Out o;
   o.dest = dest;
   o.kind = kind;
@@ -64,11 +69,16 @@ std::optional<BulkTransfer::Completed> BulkTransfer::receive(const PubKey& src, 
   const std::pair<PubKey, uint64_t> key{src, id};
   auto it = in_.find(key);
   if (it == in_.end()) {
+    const auto first = in_.lower_bound({src, 0});
+    size_t open = 0;
+    for (auto j = first; j != in_.end() && j->first.first == src; ++j) ++open;
+    if (open >= kMaxInboundPerSource) {
+      if (id < first->first.second) return std::nullopt;
+      in_.erase(first);
+    }
     In in;
     in.kind = static_cast<BulkKind>(kind);
     in.total = total;
-    in.got = 0;
-    in.buf.resize(total);
     it = in_.emplace(key, std::move(in)).first;
   }
   In& in = it->second;
@@ -77,14 +87,27 @@ std::optional<BulkTransfer::Completed> BulkTransfer::receive(const PubKey& src, 
     return std::nullopt;
   }
   // Placed by its own offset, so pieces may land in any order (e.g. split across two QoS lanes).
-  if (len) std::memcpy(in.buf.data() + offset, body.data(), len);
-  in.got += len;
+  if (len) {
+    const auto next = in.pieces.lower_bound(offset);
+    if (next != in.pieces.end() && next->first == offset && next->second.size() == len)
+      return std::nullopt;
+    const bool overlap =
+        (next != in.pieces.end() && next->first < offset + len) ||
+        (next != in.pieces.begin() && std::prev(next)->first + std::prev(next)->second.size() > offset);
+    if (overlap) {
+      in_.erase(it);
+      return std::nullopt;
+    }
+    in.pieces.emplace_hint(next, offset, wire::Bytes(body.begin(), body.end()));
+    in.got += len;
+  }
   if (in.got < in.total) return std::nullopt;
 
   Completed done;
   done.src = src;
   done.kind = in.kind;
-  done.whole = std::move(in.buf);
+  done.whole.reserve(in.total);
+  for (const auto& p : in.pieces) done.whole.insert(done.whole.end(), p.second.begin(), p.second.end());
   in_.erase(it);
   return done;
 }

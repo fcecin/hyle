@@ -13,10 +13,13 @@
 #include <boost/asio/io_context.hpp>
 
 #include <chrono>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
+
+#include <unistd.h>
 
 using namespace hyle;
 using namespace hyle::services;
@@ -168,6 +171,81 @@ BOOST_AUTO_TEST_CASE(BulkTransferReassemblesPiecesInAnyOrder) {
   BOOST_REQUIRE(done.has_value());
   BOOST_TEST((done->kind == BulkKind::Blocks));
   BOOST_TEST(done->whole == artifact);
+}
+
+BOOST_AUTO_TEST_CASE(BulkTransferRepeatedPieceDoesNotCompleteEarly) {
+  BulkTransfer tx, rx;
+  PubKey dst{}; dst.fill(0xD0);
+  PubKey src{}; src.fill(0x5C);
+  wire::Bytes artifact;
+  for (size_t i = 0; i < 3000; ++i) artifact.push_back(static_cast<uint8_t>(i * 13 + 5));
+  tx.enqueue(dst, BulkKind::Blocks, wire::View(artifact.data(), artifact.size()));
+  std::vector<wire::Bytes> pieces;
+  while (tx.sending())
+    tx.pump(1, 1000, [&](const PubKey&, wire::View piece) { pieces.emplace_back(piece.begin(), piece.end()); });
+  BOOST_REQUIRE_EQUAL(pieces.size(), 3u);
+
+  std::optional<BulkTransfer::Completed> done;
+  for (size_t i : {0, 0, 1})
+    if (auto d = rx.receive(src, wire::View(pieces[i].data(), pieces[i].size()))) done = std::move(d);
+  BOOST_TEST(!done.has_value());
+  done = rx.receive(src, wire::View(pieces[2].data(), pieces[2].size()));
+  BOOST_REQUIRE(done.has_value());
+  BOOST_TEST(done->whole == artifact);
+}
+
+BOOST_AUTO_TEST_CASE(BulkTransferBoundsInFlightTransfersPerSource) {
+  BulkTransfer rx;
+  PubKey src{}; src.fill(0x5C);
+  for (uint64_t id = 1; id <= 1000; ++id) {
+    wire::Bytes piece;
+    wire::Writer w(piece);
+    w.u64(id);
+    w.u8(static_cast<uint8_t>(BulkKind::StateBlob));
+    w.u64(1u << 16);
+    w.u64(0);
+    w.u32(1);
+    w.u8(7);
+    BOOST_TEST(!rx.receive(src, wire::View(piece.data(), piece.size())).has_value());
+  }
+  BOOST_TEST(rx.inbound() <= BulkTransfer::kMaxInboundPerSource);
+}
+
+BOOST_AUTO_TEST_CASE(BulkTransferHoldsOnlyTheBytesThatArrived) {
+  auto rss = [] {
+    std::ifstream f("/proc/self/statm");
+    uint64_t size = 0, resident = 0;
+    f >> size >> resident;
+    return resident * static_cast<uint64_t>(::sysconf(_SC_PAGESIZE));
+  };
+  BulkTransfer rx;
+  rx.set_max_inbound(1ull << 30);
+  PubKey src{}; src.fill(0x5C);
+  wire::Bytes piece;
+  wire::Writer w(piece);
+  w.u64(1);
+  w.u8(static_cast<uint8_t>(BulkKind::StateBlob));
+  w.u64(256ull << 20);
+  w.u64(0);
+  w.u32(1);
+  w.u8(7);
+  const uint64_t before = rss();
+  BOOST_TEST(!rx.receive(src, wire::View(piece.data(), piece.size())).has_value());
+  const uint64_t after = rss();
+  BOOST_TEST(after < before + (32ull << 20));
+}
+
+BOOST_AUTO_TEST_CASE(BulkTransferKeepsOneWaitingCopyPerDestination) {
+  BulkTransfer tx;
+  PubKey dst{}; dst.fill(0xD0);
+  const wire::Bytes blob(5000, 1);
+  for (int i = 0; i < 100; ++i) tx.enqueue(dst, BulkKind::StateBlob, wire::View(blob.data(), blob.size()));
+  BOOST_TEST(tx.outbound() == 1u);
+  tx.pump(1, 1000, [](const PubKey&, wire::View) {});
+  for (int i = 0; i < 100; ++i) tx.enqueue(dst, BulkKind::StateBlob, wire::View(blob.data(), blob.size()));
+  BOOST_TEST(tx.outbound() == 2u);
+  tx.enqueue(dst, BulkKind::Blocks, wire::View(blob.data(), blob.size()));
+  BOOST_TEST(tx.outbound() == 3u);
 }
 
 // The postmortem's stranded-laggard defect: a validator that missed commits must return to head
