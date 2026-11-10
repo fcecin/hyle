@@ -430,6 +430,27 @@ BOOST_AUTO_TEST_CASE(FreshEntryNotRippable) {
   BOOST_TEST(!app.account_exists(C.pub));
 }
 
+// The mempool takes a Rip only for an entry that is starved now: a Rip is
+// free, so one that cannot apply would use block space at no cost.
+BOOST_AUTO_TEST_CASE(MempoolAdmitsRipOnlyForStarvedEntry) {
+  services::Config cfg;
+  cfg.rent_rate = 1;
+  services::App app(cfg);
+  uint64_t clock = 100;
+  app.set_now_fn([&] { return clock; });
+  KeyPair A = KeyPair::generate();
+  KeyPair C = KeyPair::generate();
+  fund(app, A, 1, 10'000'000);
+  app.submit_entry(services::make_entry_put(A, sv("foo"), 0, /*fund=*/1'000'000, sv("abc")));
+  apply_block(app, 2);
+  BOOST_REQUIRE(app.entry_exists(sv("foo")));
+
+  services::EntryOp rip = services::make_entry_rip(sv("foo"), C.pub);
+  BOOST_TEST((app.admit_entry(rip) != services::Admit::Ok));
+  clock = 100'000'000;
+  BOOST_TEST((app.admit_entry(rip) == services::Admit::Ok));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(MorpheGenesis)

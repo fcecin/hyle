@@ -62,8 +62,11 @@ public:
   }
   Admit admit_entry(const EntryOp& op) {
     if (op.kind == EntryKind::Rip) {
+      const wire::View name(op.name.data(), op.name.size());
       Entry e;
-      if (!load_entry(wire::View(op.name.data(), op.name.size()), e)) return Admit::BadShape;
+      if (!load_entry(name, e)) return Admit::BadShape;
+      const uint64_t owed = rent_owed(name, e, now_fn_());
+      if (owed == 0 || owed < e.balance) return Admit::BadShape;
     }
     return mempool_.admit_entry(op, sequence(op.signer), balance(op.signer));
   }
