@@ -18,10 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The build needs the static Boost log and log_setup libraries. The test
-      # framework has only headers.
+      # The build needs the static Boost log and log_setup libraries, and these
+      # link to ICU. The test framework has only headers.
       - name: Install Boost
-        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev
+        run: sudo apt-get update && sudo apt-get install -y libboost-all-dev libicu-dev
 
       # cmake and a Rust toolchain (for malachite-cpp) are preinstalled.
       - name: Toolchain versions

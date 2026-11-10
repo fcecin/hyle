@@ -12,7 +12,7 @@ Three layers: the core library (`hyle`), the transport-agnostic node facilities 
 
 ## Build
 
-Needs a C++20 compiler, CMake, Boost, and a Rust toolchain (malachite-cpp builds a staticlib).
+Needs a C++20 compiler, CMake, Boost, ICU (the static Boost.Log libraries link to it), and a Rust toolchain (malachite-cpp builds a staticlib). On Ubuntu, install `libboost-all-dev` and `libicu-dev`.
 
 ```
 ./build.sh debug --test
