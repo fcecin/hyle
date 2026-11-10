@@ -18,8 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Boost 1.83 ships on ubuntu-latest; the build needs system, log, log_setup
-      # (static) plus the header-only test framework.
+      # The build needs the static Boost log and log_setup libraries. The test
+      # framework has only headers.
       - name: Install Boost
         run: sudo apt-get update && sudo apt-get install -y libboost-all-dev
 

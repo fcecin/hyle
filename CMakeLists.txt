@@ -14,7 +14,9 @@ set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 find_package(Threads REQUIRED)
 
 set(Boost_USE_STATIC_LIBS ON)
-find_package(Boost 1.83.0 REQUIRED COMPONENTS system log log_setup)
+# Boost.System has only headers. Boost 1.90 has no `boost_system` package, so
+# do not request it as a component.
+find_package(Boost 1.83.0 REQUIRED COMPONENTS log log_setup)
 
 # CryptoPP: ed25519 + sha256. Pinned to an exact commit: consensus-critical, an
 # upstream change to the ed25519/sha256 path could shift the AppHash.
@@ -59,7 +61,6 @@ target_link_libraries(hyle PUBLIC
   malachite::cpp
   cryptopp::cryptopp
   Boost::headers
-  Boost::system
   Boost::log
   Boost::log_setup
   Threads::Threads

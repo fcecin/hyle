@@ -15,10 +15,7 @@ add_executable(hyletests
   test_sim.cpp
   test_votewal.cpp
 )
-target_link_libraries(hyletests PRIVATE
-  hyle_services
-  Boost::system
-)
+target_link_libraries(hyletests PRIVATE hyle_services)
 add_test(NAME hyletests COMMAND hyletests)
 
 # embedtests: proves core + services alone are a working node. Links hyle_services,
@@ -27,7 +24,7 @@ add_executable(embedtests
   tests_main.cpp
   test_embed.cpp
 )
-target_link_libraries(embedtests PRIVATE hyle_services Boost::system)
+target_link_libraries(embedtests PRIVATE hyle_services)
 add_test(NAME embedtests COMMAND embedtests)
 
 # Morphe (layer 3) has its own test binary.
@@ -36,10 +33,7 @@ add_executable(morphetests
   test_morphe.cpp
   test_wiresync.cpp
 )
-target_link_libraries(morphetests PRIVATE
-  hyle_morphe
-  Boost::system
-)
+target_link_libraries(morphetests PRIVATE hyle_morphe)
 add_test(NAME morphetests COMMAND morphetests)
 
 # e2etests: black-box end-to-end. Launches the real morphe and techne binaries
@@ -48,6 +42,6 @@ add_executable(e2etests
   tests_main.cpp
   test_e2e.cpp
 )
-target_link_libraries(e2etests PRIVATE hyle_morphe Boost::system)
+target_link_libraries(e2etests PRIVATE hyle_morphe)
 add_dependencies(e2etests morphe techne)
 add_test(NAME e2etests COMMAND e2etests)
