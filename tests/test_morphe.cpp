@@ -1859,6 +1859,67 @@ BOOST_AUTO_TEST_CASE(HttpAndWebSocketEndToEnd) {
   worker.join();
 }
 
+BOOST_AUTO_TEST_CASE(ControlRpcRefusesForeignBrowserOrigins) {
+  KeyPair a = KeyPair::generate();
+  services::Genesis g;
+  g.chain_id = "origin";
+  g.validators = {a.pub};
+  net_t::io_context io;
+  services::Runtime rt(g, a);
+  morphe::RpcService svc(rt);
+  morphe::RpcHttpServer server(io, svc, 0);
+  server.start();
+  const uint16_t port = server.port();
+  std::thread worker([&] { io.run(); });
+
+  auto post = [&](const std::string& host, const std::string& origin) {
+    net_t::io_context cio;
+    tcp_t::socket sock(cio);
+    sock.connect(tcp_t::endpoint(net_t::ip::make_address("127.0.0.1"), port));
+    http_t::request<http_t::string_body> req(http_t::verb::post, "/", 11);
+    req.set(http_t::field::host, host);
+    if (!origin.empty()) req.set(http_t::field::origin, origin);
+    req.set(http_t::field::content_type, "text/plain");
+    req.body() = R"({"jsonrpc":"2.0","method":"status","params":{},"id":1})";
+    req.prepare_payload();
+    http_t::write(sock, req);
+    beast_t::flat_buffer b;
+    http_t::response<http_t::string_body> res;
+    http_t::read(sock, b, res);
+    return static_cast<int>(res.result_int());
+  };
+  auto ws_opens = [&](const std::string& origin) {
+    net_t::io_context wio;
+    tcp_t::socket sock(wio);
+    sock.connect(tcp_t::endpoint(net_t::ip::make_address("127.0.0.1"), port));
+    ws_t::stream<tcp_t::socket> ws(std::move(sock));
+    ws.set_option(ws_t::stream_base::decorator(
+        [origin](ws_t::request_type& r) { r.set(http_t::field::origin, origin); }));
+    beast_t::error_code ec;
+    ws.handshake("localhost", "/", ec);
+    if (!ec) ws.close(ws_t::close_code::normal, ec);
+    return !ec;
+  };
+  const std::string self = "127.0.0.1:" + std::to_string(port);
+
+  try {
+    BOOST_TEST(post("localhost", "") == 200);
+    BOOST_TEST(post(self, "http://" + self) == 200);
+    BOOST_TEST(post(self, "http://evil.example") == 403);
+    BOOST_TEST(post(self, "null") == 403);
+    BOOST_TEST(post("evil.example:" + std::to_string(port), "") == 403);
+    BOOST_TEST(post(self, "http://127.0.0.1:" + std::to_string(port + 1)) == 403);
+    BOOST_TEST(!ws_opens("http://evil.example"));
+    BOOST_TEST(ws_opens("http://localhost"));
+  } catch (...) {
+    net_t::post(io, [&] { io.stop(); });
+    worker.join();
+    throw;
+  }
+  net_t::post(io, [&] { io.stop(); });
+  worker.join();
+}
+
 BOOST_AUTO_TEST_CASE(PublishSurvivesSlowSubscriber) {
   KeyPair a = KeyPair::generate();
   services::Genesis g;

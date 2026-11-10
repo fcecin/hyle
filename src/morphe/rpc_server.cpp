@@ -6,10 +6,12 @@
 
 #include <hyle/services/hex.h>
 
+#include <cctype>
 #include <chrono>
 #include <deque>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace beast = boost::beast;
@@ -47,6 +49,30 @@ std::string handle_jsonrpc(RpcService& svc, const std::string& body) {
     resp["error"] = json::object{{"code", -32700}, {"message", "parse error"}};
   }
   return json::serialize(resp);
+}
+
+bool local_host(std::string_view host) {
+  std::string h(host);
+  const auto colon = h.rfind(':');
+  if (colon != std::string::npos && h.find(']', colon) == std::string::npos) h.resize(colon);
+  for (auto& c : h) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return h == "127.0.0.1" || h == "localhost" || h == "[::1]";
+}
+
+bool same_origin(std::string_view origin, std::string_view host) {
+  const auto sep = origin.find("://");
+  if (sep == std::string_view::npos || host.empty()) return false;
+  std::string a(origin.substr(sep + 3)), h(host);
+  for (auto& c : a) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  for (auto& c : h) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return a == h;
+}
+
+bool browser_safe(const http::request<http::string_body>& req) {
+  const auto host = req[http::field::host];
+  if (!host.empty() && !local_host(host)) return false;
+  const auto origin = req[http::field::origin];
+  return origin.empty() || same_origin(origin, host);
 }
 
 }  // namespace
@@ -145,6 +171,15 @@ private:
                      });
   }
   void on_read() {
+    if (!browser_safe(req_)) {
+      auto res = std::make_shared<http::response<http::string_body>>(http::status::forbidden,
+                                                                     req_.version());
+      res->keep_alive(false);
+      res->set(http::field::content_type, "text/plain");
+      res->body() = "forbidden";
+      reply(res);
+      return;
+    }
     if (websocket::is_upgrade(req_)) {
       std::make_shared<WsSession>(stream_.release_socket(), server_, svc_)
           ->run(std::move(req_));
@@ -164,6 +199,9 @@ private:
       res->set(http::field::content_type, "application/json");
       res->body() = handle_jsonrpc(svc_, req_.body());
     }
+    reply(res);
+  }
+  void reply(const std::shared_ptr<http::response<http::string_body>>& res) {
     res->prepare_payload();
     stream_.expires_after(std::chrono::seconds(30));
     http::async_write(stream_, *res,
