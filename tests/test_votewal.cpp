@@ -3,9 +3,16 @@
 #include "local_cluster.h"
 #include "mock_state_machine.h"
 
+#include <chrono>
+#include <csignal>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 using namespace hyle;
 
@@ -25,16 +32,28 @@ struct TempDir {
   }
 };
 
-uintmax_t wal_size(const std::filesystem::path& dir, const PubKey& pk) {
+std::filesystem::path wal_path(const std::filesystem::path& dir, const PubKey& pk) {
   static const char* d = "0123456789abcdef";
   std::string hex;
   for (uint8_t b : pk) {
     hex.push_back(d[b >> 4]);
     hex.push_back(d[b & 0xf]);
   }
+  return dir / ("votewal-" + hex + ".bin");
+}
+
+uintmax_t wal_size(const std::filesystem::path& dir, const PubKey& pk) {
   std::error_code ec;
-  auto sz = std::filesystem::file_size(dir / ("votewal-" + hex + ".bin"), ec);
+  auto sz = std::filesystem::file_size(wal_path(dir, pk), ec);
   return ec ? 0 : sz;
+}
+
+malachite::ValidatorSet solo_set(const KeyPair& kp) {
+  malachite::Validator v;
+  v.public_key.assign(kp.pub.begin(), kp.pub.end());
+  v.address = v.public_key;
+  v.voting_power = 1;
+  return {v};
 }
 
 std::vector<StateMachine*> ptrs(std::vector<MockStateMachine>& sm) {
@@ -103,6 +122,67 @@ BOOST_AUTO_TEST_CASE(CrashMidHeightReloadsAndStaysSafe) {
         BOOST_TEST((sm[i].applied[0] == ref));
     }
   BOOST_REQUIRE(!ref.empty());
+}
+
+BOOST_AUTO_TEST_CASE(TornTailDoesNotHideLaterRecords) {
+  TempDir tmp("torn");
+  MockStateMachine sm;
+  KeyPair kp = KeyPair::generate();
+  NodeConfig cfg;
+  cfg.data_dir = tmp.path.string();
+  const uint8_t a[] = {1, 2, 3};
+  const uint8_t b[] = {4, 5, 6, 7};
+  {
+    Node n(kp, solo_set(kp), sm, cfg);
+    n.wal_append(malachite::BytesView(a, sizeof a));
+  }
+  {
+    std::ofstream f(wal_path(tmp.path, kp.pub), std::ios::binary | std::ios::app);
+    const char torn[] = {0, 0, 0, 100, 9, 9};
+    f.write(torn, sizeof torn);
+  }
+  {
+    Node n(kp, solo_set(kp), sm, cfg);
+    BOOST_REQUIRE_EQUAL(n.boot_wal().size(), 1u);
+    n.wal_append(malachite::BytesView(b, sizeof b));
+  }
+  Node n(kp, solo_set(kp), sm, cfg);
+  BOOST_REQUIRE_EQUAL(n.boot_wal().size(), 2u);
+  BOOST_TEST((n.boot_wal()[1] == malachite::Bytes(b, b + sizeof b)));
+}
+
+BOOST_AUTO_TEST_CASE(UnwritableWalStopsTheNode) {
+  TempDir tmp("full");
+  KeyPair kp = KeyPair::generate();
+  std::error_code ec;
+  std::filesystem::create_symlink("/dev/full", wal_path(tmp.path, kp.pub), ec);
+  BOOST_REQUIRE(!ec);
+  pid_t child = ::fork();
+  BOOST_REQUIRE(child >= 0);
+  if (child == 0) {
+    ::signal(SIGABRT, SIG_DFL);
+    try {
+      MockStateMachine sm;
+      NodeConfig cfg;
+      cfg.data_dir = tmp.path.string();
+      Node n(kp, solo_set(kp), sm, cfg);
+      const uint8_t v[] = {1};
+      n.wal_append(malachite::BytesView(v, sizeof v));
+    } catch (...) {
+    }
+    ::_exit(0);
+  }
+  int status = 0;
+  pid_t r = 0;
+  for (int i = 0; i < 300 && r == 0; i++) {
+    r = ::waitpid(child, &status, WNOHANG);
+    if (r == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (r == 0) {
+    ::kill(child, SIGKILL);
+    ::waitpid(child, &status, 0);
+  }
+  BOOST_TEST((r == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

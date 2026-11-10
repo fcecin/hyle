@@ -3,10 +3,13 @@
 #include <hyle/core/blog.h>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <set>
@@ -34,29 +37,68 @@ std::string pubkey_hex(const PubKey& k) {
   return s;
 }
 
+[[noreturn]] void wal_fail(const char* what, int err) {
+  LOGFATAL << "vote WAL: " << what << " failed (" << std::strerror(err)
+           << "); stopping to avoid a double sign";
+  std::abort();
+}
+
+bool write_all(int fd, const uint8_t* p, size_t n) {
+  while (n) {
+    ssize_t w = ::write(fd, p, n);
+    if (w < 0 && errno == EINTR) continue;
+    if (w <= 0) return false;
+    p += w;
+    n -= static_cast<size_t>(w);
+  }
+  return true;
+}
+
+bool read_all(int fd, uint8_t* p, size_t n) {
+  while (n) {
+    ssize_t r = ::read(fd, p, n);
+    if (r < 0 && errno == EINTR) continue;
+    if (r <= 0) return false;
+    p += r;
+    n -= static_cast<size_t>(r);
+  }
+  return true;
+}
+
 void wal_append_record(int fd, const uint8_t* data, size_t len) {
-  if (fd < 0 || len > 0xffffffffu) return;
+  if (fd < 0) return;
+  if (len > 0xffffffffu) wal_fail("record size check", EFBIG);
   uint8_t hdr[4] = {static_cast<uint8_t>(len >> 24), static_cast<uint8_t>(len >> 16),
                     static_cast<uint8_t>(len >> 8), static_cast<uint8_t>(len)};
-  if (::write(fd, hdr, 4) != 4) return;
-  if (len && ::write(fd, data, len) != static_cast<ssize_t>(len)) return;
-  ::fsync(fd);
+  if (!write_all(fd, hdr, 4) || !write_all(fd, data, len)) wal_fail("write", errno ? errno : EIO);
+  if (::fsync(fd) != 0) wal_fail("fsync", errno);
 }
 
 std::vector<malachite::Bytes> wal_load_records(int fd) {
   std::vector<malachite::Bytes> out;
   if (fd < 0) return out;
-  ::lseek(fd, 0, SEEK_SET);
-  for (;;) {
+  struct stat st {};
+  if (::fstat(fd, &st) != 0) wal_fail("stat", errno);
+  const uint64_t size = st.st_size > 0 ? static_cast<uint64_t>(st.st_size) : 0;
+  uint64_t good = 0;
+  if (::lseek(fd, 0, SEEK_SET) < 0) wal_fail("seek", errno);
+  while (size - good >= 4) {
     uint8_t hdr[4];
-    if (::read(fd, hdr, 4) != 4) break;
+    if (!read_all(fd, hdr, 4)) wal_fail("read", errno ? errno : EIO);
     uint32_t len = (uint32_t(hdr[0]) << 24) | (uint32_t(hdr[1]) << 16) | (uint32_t(hdr[2]) << 8) |
                    uint32_t(hdr[3]);
+    if (len > size - good - 4) break;
     malachite::Bytes rec(len);
-    if (len && ::read(fd, rec.data(), len) != static_cast<ssize_t>(len)) break;
+    if (!read_all(fd, rec.data(), len)) wal_fail("read", errno ? errno : EIO);
     out.push_back(std::move(rec));
+    good += 4 + uint64_t(len);
   }
-  ::lseek(fd, 0, SEEK_END);
+  if (good < size) {
+    LOGWARNING << "vote WAL: dropping a torn tail of " << (size - good) << " bytes";
+    if (::ftruncate(fd, static_cast<off_t>(good)) != 0) wal_fail("truncate", errno);
+    if (::fsync(fd) != 0) wal_fail("fsync", errno);
+  }
+  if (::lseek(fd, static_cast<off_t>(good), SEEK_SET) < 0) wal_fail("seek", errno);
   return out;
 }
 
