@@ -932,6 +932,28 @@ BOOST_AUTO_TEST_CASE(ChainedNoncesAndDrainOrder) {
   BOOST_TEST(mp.empty());
 }
 
+// A block takes at most `max` ops. The ops past the cap stay for the next one.
+BOOST_AUTO_TEST_CASE(DrainKeepsOpsPastTheBlockCap) {
+  services::Mempool mp{services::Config{}};
+  KeyPair a = KeyPair::generate(), b = KeyPair::generate();
+  wire::Bytes to = acct_key(b.pub);
+  for (uint64_t s = 0; s < 3; ++s) {
+    services::TransferOp op = services::make_transfer(a, kv_view(to), 10, s);
+    BOOST_TEST((mp.admit_transfer(op, 0, 100) == services::Admit::Ok));
+  }
+  services::Decoded first = mp.drain(2);
+  BOOST_TEST(first.transfers.size() == 2u);
+  BOOST_TEST(mp.size() == 1u);
+
+  services::TransferOp next = services::make_transfer(a, kv_view(to), 10, 3);
+  BOOST_TEST((mp.admit_transfer(next, 0, 100) == services::Admit::Ok));
+  services::Decoded rest = mp.drain(10);
+  BOOST_REQUIRE(rest.transfers.size() == 2u);
+  BOOST_TEST(rest.transfers[0].seq == 2u);
+  BOOST_TEST(rest.transfers[1].seq == 3u);
+  BOOST_TEST(mp.empty());
+}
+
 BOOST_AUTO_TEST_CASE(AdmittedTransferCommitsAndMovesBalance) {
   KeyPair a = KeyPair::generate(), b = KeyPair::generate();
   services::Genesis g;

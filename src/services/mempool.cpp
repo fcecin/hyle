@@ -57,7 +57,7 @@ Admit Mempool::admit_transfer(const TransferOp& op, uint64_t committed_seq,
     return Admit::InsufficientFunds;
   }
 
-  order_.push_back({Kind::Transfer, transfers_.size()});
+  order_.push_back({Kind::Transfer, transfers_.size(), id, true, op.from, op.seq, reserve});
   transfers_.push_back(op);
   seen_.insert(id);
   next_seq_[op.from] = op.seq + 1;
@@ -72,7 +72,7 @@ Admit Mempool::admit_entry(const EntryOp& op, uint64_t committed_seq, uint64_t c
   if (op.kind == EntryKind::Rip) {
     const Hash id = id_of(wire::View(op.name.data(), op.name.size()), op.sig);
     if (seen(id)) return Admit::Duplicate;
-    order_.push_back({Kind::Entry, entries_.size()});
+    order_.push_back({Kind::Entry, entries_.size(), id, false, PubKey{}, 0, 0});
     entries_.push_back(op);
     seen_.insert(id);
     return Admit::Ok;
@@ -96,7 +96,7 @@ Admit Mempool::admit_entry(const EntryOp& op, uint64_t committed_seq, uint64_t c
   const uint64_t pending = debit_.count(op.signer) ? debit_[op.signer] : 0;
   if (committed_balance < sat_add(pending, cost)) return Admit::InsufficientFunds;
 
-  order_.push_back({Kind::Entry, entries_.size()});
+  order_.push_back({Kind::Entry, entries_.size(), id, true, op.signer, op.seq, cost});
   entries_.push_back(op);
   seen_.insert(id);
   next_seq_[op.signer] = op.seq + 1;
@@ -128,7 +128,7 @@ Admit Mempool::admit_sudo(const SudoOp& op, uint64_t committed_seq, uint64_t com
   const uint64_t pending = debit_.count(op.signer) ? debit_[op.signer] : 0;
   if (committed_balance < sat_add(pending, cfg_.fee_sudo)) return Admit::InsufficientFunds;
 
-  order_.push_back({Kind::Sudo, sudos_.size()});
+  order_.push_back({Kind::Sudo, sudos_.size(), id, true, op.signer, op.seq, cfg_.fee_sudo});
   sudos_.push_back(op);
   seen_.insert(id);
   next_seq_[op.signer] = op.seq + 1;
@@ -151,21 +151,49 @@ Decoded Mempool::snapshot() const {
 Decoded Mempool::drain(size_t max) {
   Decoded d;
   const size_t n = std::min(max, order_.size());
-  for (size_t i = 0; i < n; ++i) {
-    const Slot& s = order_[i];
-    switch (s.kind) {
-      case Kind::Transfer: d.transfers.push_back(transfers_[s.idx]); break;
-      case Kind::Entry: d.entries.push_back(entries_[s.idx]); break;
-      case Kind::Sudo: d.sudos.push_back(sudos_[s.idx]); break;
-    }
-  }
-  transfers_.clear();
-  entries_.clear();
-  sudos_.clear();
-  order_.clear();
+  std::vector<TransferOp> transfers;
+  std::vector<EntryOp> entries;
+  std::vector<SudoOp> sudos;
+  std::vector<Slot> order;
   seen_.clear();
   next_seq_.clear();
   debit_.clear();
+  for (size_t i = 0; i < order_.size(); ++i) {
+    Slot s = order_[i];
+    if (i < n) {
+      switch (s.kind) {
+        case Kind::Transfer: d.transfers.push_back(std::move(transfers_[s.idx])); break;
+        case Kind::Entry: d.entries.push_back(std::move(entries_[s.idx])); break;
+        case Kind::Sudo: d.sudos.push_back(std::move(sudos_[s.idx])); break;
+      }
+      continue;
+    }
+    const size_t from = s.idx;
+    switch (s.kind) {
+      case Kind::Transfer:
+        s.idx = transfers.size();
+        transfers.push_back(std::move(transfers_[from]));
+        break;
+      case Kind::Entry:
+        s.idx = entries.size();
+        entries.push_back(std::move(entries_[from]));
+        break;
+      case Kind::Sudo:
+        s.idx = sudos.size();
+        sudos.push_back(std::move(sudos_[from]));
+        break;
+    }
+    seen_.insert(s.id);
+    if (s.sequenced) {
+      next_seq_[s.signer] = s.seq + 1;
+      debit_[s.signer] = sat_add(debit_[s.signer], s.reserve);
+    }
+    order.push_back(s);
+  }
+  transfers_ = std::move(transfers);
+  entries_ = std::move(entries);
+  sudos_ = std::move(sudos);
+  order_ = std::move(order);
   return d;
 }
 

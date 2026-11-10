@@ -45,7 +45,15 @@ public:
 
 private:
   enum class Kind : uint8_t { Transfer, Entry, Sudo };
-  struct Slot { Kind kind; size_t idx; };
+  struct Slot {
+    Kind kind;
+    size_t idx;
+    Hash id;
+    bool sequenced;
+    PubKey signer;
+    uint64_t seq;
+    uint64_t reserve;
+  };
 
   Hash id_of(wire::View sign_bytes, const Sig& sig) const;
   bool seen(const Hash& id) const { return seen_.count(id) != 0; }
