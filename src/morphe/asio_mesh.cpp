@@ -17,6 +17,7 @@ namespace asio = boost::asio;
 using tcp = boost::asio::ip::tcp;
 
 static constexpr uint32_t MAX_PAYLOAD = 16u << 20;
+static constexpr uint32_t MAX_HANDSHAKE_PAYLOAD = 64;
 static constexpr uint8_t MAX_HOP = 2;
 static constexpr size_t kMaxQueued = 8192;
 
@@ -134,7 +135,12 @@ void AsioMesh::read_header(SessionPtr s) {
                      const uint8_t* p = s->frame.data() + FRAME_HEADER_SIZE - 4;  // payload_len
                      uint32_t plen = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
                                      (uint32_t(p[2]) << 8) | uint32_t(p[3]);
-                     if (plen > MAX_PAYLOAD) { drop_session(s); return; }
+                     if (plen > (s->identified ? MAX_PAYLOAD : MAX_HANDSHAKE_PAYLOAD)) {
+                       boost::system::error_code cec;
+                       s->sock.close(cec);
+                       drop_session(s);
+                       return;
+                     }
                      read_payload(s, plen);
                    });
 }

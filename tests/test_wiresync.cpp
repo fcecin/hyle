@@ -11,7 +11,9 @@
 #include <hyle/services/sync.h>
 
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/write.hpp>
 
+#include <array>
 #include <chrono>
 #include <fstream>
 #include <functional>
@@ -397,6 +399,33 @@ BOOST_AUTO_TEST_CASE(AsioMeshRedeliversConsensusDupes) {
     io.run_for(std::chrono::milliseconds(5));
   BOOST_TEST(consensus == 2);
   BOOST_TEST(tx == 1);
+}
+
+BOOST_AUTO_TEST_CASE(AsioMeshClosesAnOversizedFrameBeforeTheHandshake) {
+  boost::asio::io_context io;
+  auto kps = morphe::mesh_keys(1);
+  morphe::AsioMesh m(io, kps[0], 7, 0, std::chrono::seconds(30));
+  m.start();
+  boost::asio::ip::tcp::socket sock(io);
+  sock.connect(boost::asio::ip::tcp::endpoint(boost::asio::ip::make_address("127.0.0.1"), m.port()));
+  morphe::FrameHeader h;
+  h.chain_tag = 7;
+  h.type = MsgType::Hello;
+  wire::Bytes frame = morphe::encode_frame(h, wire::View());
+  BOOST_REQUIRE_EQUAL(frame.size(), morphe::FRAME_HEADER_SIZE);
+  frame[morphe::FRAME_HEADER_SIZE - 3] = 0x10;
+  boost::asio::write(sock, boost::asio::buffer(frame));
+  bool closed = false;
+  std::array<uint8_t, 4096> buf{};
+  std::function<void()> pull = [&] {
+    sock.async_read_some(boost::asio::buffer(buf), [&](const boost::system::error_code& ec, size_t) {
+      if (ec) { closed = true; return; }
+      pull();
+    });
+  };
+  pull();
+  for (int i = 0; i < 400 && !closed; ++i) io.run_for(std::chrono::milliseconds(5));
+  BOOST_TEST(closed);
 }
 
 // Forged sync artifacts must not disturb a healthy node: a bad certificate is rejected by the probe
